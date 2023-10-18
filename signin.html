@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Sign In</title>
+    <link rel="icon" type="image/png" href="http://localhost:8080/get/image_files/favicon.png" />
+
+    <!-- <link
+      rel="icon"
+      type="image/png"
+      href="https://upload.wikimedia.org/wikipedia/commons/2/2d/Google-favicon-2015.png"
+    /> -->
+  </head>
+  <style>
+    .container {
+      max-width: 300px;
+      margin: 0 auto;
+      padding: 20px;
+      text-align: center;
+    }
+
+    h1 {
+      margin-bottom: 20px;
+    }
+
+    input,
+    button {
+      margin-bottom: 10px;
+    }
+
+    #message {
+      margin-top: 10px;
+      color: red;
+    }
+  </style>
+  <body>
+    <div class="container">
+      <h1>Sign In</h1>
+      <input type="text" id="email" placeholder="email" />
+      <input type="password" id="password" placeholder="Password" />
+      <button id="signinBtn" type="submit">Sign In</button>
+    </div>
+
+    <script src="/constants.js"></script>
+    <script type="module">
+      let token = localStorage.getItem("token");
+
+      if (token) {
+        location.href = "/main";
+      }
+
+      // Get the input values
+      const emailInput = document.getElementById("email");
+      const passwordInput = document.getElementById("password");
+      const signinBtn = document.getElementById("signinBtn");
+
+      emailInput.value = "test_web_user1@test.com";
+      passwordInput.value = "1234";
+
+      // 로그인 버튼 이벤트 등록
+      signinBtn.onclick = async () => {
+        let email = emailInput.value;
+        let password = passwordInput.value;
+        if (!email || !password) {
+          alert("이메일과 비밀번호를 입력해 주시기 바랍니다.");
+        } else {
+          const encoder = new TextEncoder();
+          const data = encoder.encode(password);
+
+          // Calculate the SHA-256 hash
+          let hashedPassword = await crypto.subtle.digest("SHA-256", data).then((hashBuffer) => {
+            // Convert the hash buffer to a hex string
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const hashHex = hashArray.map((byte) => byte.toString(16).padStart(2, "0")).join("");
+            return hashHex;
+          });
+
+          signinRequest(email, hashedPassword);
+        }
+      };
+
+      // 로그인 요청 보내기
+      function signinRequest(email_param, password_param) {
+        const data = {
+          email: email_param,
+          password: password_param,
+        };
+
+        const requestURL = Main_server_URL + "test_files/app_signin_web.php";
+
+        return fetch(requestURL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(data),
+        })
+          .then(async (response) => {
+            //console.log("response from main server : ", response);
+            const res = await response.json();
+            console.log("response from main server : ", res);
+
+            if (res.statusCode === 200) {
+              localStorage.setItem("token", res.data.token);
+              localStorage.setItem("userId", res.data.AU_Id);
+              localStorage.setItem("userName", res.data.AU_Name);
+              localStorage.setItem("userProfileImg", res.data.AU_ProfileImg);
+              location.href = "/main";
+            } else if (res.statusCode === 404) {
+              alert(res.message);
+            }
+          })
+          .catch((error) => {
+            console.error(error);
+            alert("요청 중 에러가 발생하였습니다. 잠시 후 다시 시도해 주세요");
+          });
+      }
+    </script>
+  </body>
+</html>

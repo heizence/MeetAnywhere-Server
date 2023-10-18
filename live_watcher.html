@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Pianissimo live streaming web demonstrator</title>
+  </head>
+  <style>
+    body {
+      margin: 0;
+      padding-left: 1rem;
+      padding-right: 1rem;
+      padding-bottom: 3rem;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    #videoViewContainer {
+      /* background-color: black; */
+    }
+    #bottomTab {
+      position: fixed;
+      width: 100%;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      display: flex;
+    }
+    #form {
+      background: rgba(0, 0, 0, 0.15);
+      padding: 0.25rem;
+      left: 0;
+      right: 0;
+      display: flex;
+      flex: 1;
+      height: 3rem;
+      box-sizing: border-box;
+      backdrop-filter: blur(10px);
+    }
+    #exit {
+      padding: 10px;
+      font-size: 20px;
+    }
+    #input {
+      border: none;
+      padding: 0 1rem;
+      flex-grow: 1;
+      border-radius: 2rem;
+      margin: 0.25rem;
+    }
+    #input:focus {
+      outline: none;
+    }
+    #form > button {
+      background: #333;
+      border: none;
+      padding: 0 1rem;
+      margin: 0.25rem;
+      border-radius: 3px;
+      outline: none;
+      color: #fff;
+    }
+    .chat-message {
+      display: flex;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .chat-message img {
+      width: 40px;
+      height: 40px;
+      object-fit: cover;
+      border-radius: 50%;
+      margin-right: 10px;
+      border-color: black;
+      border-width: 2px;
+    }
+    .chat-message .sender-name {
+      font-weight: bold;
+      font-size: 20px;
+      margin-right: 10px;
+    }
+    .chat-message .message-content {
+      flex-grow: 1;
+    }
+    #liveInfoDiv {
+      margin-top: 10px;
+      margin-bottom: 20px;
+    }
+    #hostProfileImageView {
+      width: 80px;
+      height: 80px;
+      object-fit: cover;
+      border-radius: 80px;
+      margin-right: 10px;
+      border-color: black;
+      border-width: 2px;
+    }
+  </style>
+  <body>
+    <h2>라이브 방송</h2>
+    <!-- 영상 표시되는 영역 -->
+    <div id="videoViewContainer">
+      <video id="videoView" autoplay></video>
+    </div>
+    <div id="liveInfoDiv">
+      <div style="display: flex; flex-direction: row; align-items: center">
+        <img id="hostProfileImageView" />
+        <div>
+          <h2 id="liveTitle" style="margin: 0"></h2>
+          <span id="hostNameTxt">hostName</span><br />
+          <span id="numberOfWatchersTxt" style="margin-right: 30px">n명 시청중</span>
+          <span id="liveStartedAtTxt">시작 : n분 전</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="chatContainer"></div>
+    <div id="bottomTab">
+      <form id="form" action=""><input id="input" autocomplete="off" /><button>send</button></form>
+      <button id="exit">exit</button>
+    </div>
+  </body>
+
+  <script src="/constants.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+
+  <script type="module">
+    const userName = localStorage.getItem("userName"); // 스트리머 또는 시청자 이름
+    const hostName = localStorage.getItem("hostName") || ""; // 스트리머 이름
+    const hostProfileImage = localStorage.getItem("hostProfileImage") || ""; // 스트리머 프로필 사진
+    const roomName = localStorage.getItem("roomName"); // 방송방 이름
+    const roomId = localStorage.getItem("roomId"); // 방송방 고유 id
+    const liveStartedAt = localStorage.getItem("liveStartedAt"); // 방송방 이름
+    const numberOfWatchers = localStorage.getItem("numberOfWatchers"); // 방송방 시청자 수
+
+    let liveTitle = document.getElementById("liveTitle"); // 표시해 줄 방송방 제목 element
+    liveTitle.innerHTML = roomName; // 방송방 이름 데이터 입력
+
+    // 스트리머 이름 랜더링 해 주기. 시청자인 경우에만 해당
+    let hostNameTxt = document.getElementById("hostNameTxt"); // 스트리머 이름
+    hostNameTxt.innerHTML = hostName;
+
+    // 스트리머 프로필 사진 랜더링 해 주기. 시청자인 경우에만 해당
+    let hostProfileImageView = document.getElementById("hostProfileImageView"); // 스트리머 이름
+    if (hostProfileImage && hostProfileImage !== "null") {
+      hostProfileImageView.src = `data:image/jpeg;base64,${hostProfileImage}`;
+    } else {
+      hostProfileImageView.src = "/get/image_files/ic_profile_photo.png";
+    }
+    hostProfileImageView.alt = "Image";
+    hostProfileImageView.innerHTML = hostName;
+
+    let numberOfWatchersTxt = document.getElementById("numberOfWatchersTxt"); // 라이브 방송 실시간 시청자 수 표시할 span
+
+    let liveStartedAtTxt = document.getElementById("liveStartedAtTxt"); // 라이브 시작 후 경과한 시간 표시할 span
+    let calculateTimeLapsedInterval; // 경과한 시간을 체크할 timer interval 객체
+
+    let form = document.getElementById("form"); // 실시간 채팅 input form
+    let input = document.getElementById("input"); // 실시간 채팅 input
+    let exitBtn = document.getElementById("exit"); // 방송방 나가기 버튼
+
+    // 영상이 표시되는 영역. 스트리머일 경우에는 본인의 local stream 이 표시되고 시청자일 경우에는 상대방의 stream, 즉 remote stream 이 표시됨.
+    let videoViewContainer = document.getElementById("videoViewContainer");
+    let videoView = document.getElementById("videoView");
+    let videoWidth = 500;
+    let videoHeight = 400;
+    let videoRatioFromStreamer; // 스트리머가 송출하는 영상 비율을 scale 한 값.
+
+    videoView.setAttribute("width", videoWidth);
+    videoView.setAttribute("height", videoHeight);
+    // videoViewContainer.setAttribute("width", videoWidth);
+    // videoViewContainer.setAttribute("height", videoHeight);
+
+    // 채팅 전송 버튼에 이벤트 등록
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      // 내용이 있을 때만 전송해 주기.
+      if (input.value) {
+        // 보내줄 데이터 객체
+        const chatMessageObj = {
+          senderUserId: localStorage.getItem("userId"), // 사용자 회원 고유 id
+          senderName: userName,
+          senderProfileImg: "", // 시연용 웹이므로 프로필 사진 없음
+          chatMessageContents: input.value,
+        };
+
+        socket.emit("chat message", chatMessageObj); // socket 에 event emit.
+        input.value = ""; // input 창 value 비우기
+      }
+    });
+
+    // 방송방 나가기 버튼에 이벤트 등록
+    exitBtn.onclick = () => {
+      // 스트리머는 방송 종료, 시청자는 단순 나가기 이벤트 emit 해 주기. 이후 메인 화면으로 redirect
+      socket.emit("watcher left");
+      location.href = "/rooms";
+    };
+
+    /* RTCPeeConnection 들을 저장하는 객체.
+       1:1 일 경우에는 객체 형식일 필요는 없지만 시청자가 여러 명이므로 여러 개의 peerConnection 객체를 저장해서 관리해 줘야 함.
+       key 는 peerConnectionID, value 는 RTCPeerConnection 객체
+       */
+    let peerConnectionList = {};
+    let localStream; // 스트리머가 송출해 줄 본인의 stream 데이터
+    let remoteStream; // 시청자가 스트리머로부터 받는 stream 데이터
+    let chunks = []; // 녹화한 미디어 데이터를 저장해 줄 chunk
+
+    // 스트리머, 시청자 client 에 미디어 데이터를 표시할 때 사용할 제약.
+    let mediaConstraints = {
+      audio: true, // 전송해 줄 stream 에 audio track 포함 여부. 포함시키지 않으면 소리 데이터는 전송되지 않음.
+      // 전송해 줄 stream 에 video track 포함 여부. 포함시키지 않으면 영상 데이터는 전송되지 않음.
+      // true or false 로 나타낼 수 있고 상세하게 크기를 설정할 수 있음.
+      video: {
+        width: videoWidth,
+        height: videoHeight,
+      },
+    };
+
+    // 로그에 시간을 남기기 위한 시간 생성 매서드
+    function getTime() {
+      const now = new Date();
+      const hours = now.getHours().toString().padStart(2, "0");
+      const minutes = now.getMinutes().toString().padStart(2, "0");
+      const seconds = now.getSeconds().toString().padStart(2, "0");
+      const milliseconds = now.getMilliseconds().toString().padStart(3, "0");
+      return `Time : ${hours}:${minutes}:${seconds}:${milliseconds}`;
+    }
+
+    // 라이브 시작 후 경과한 시간을 체크하는 timer
+    function calculateTimeLapsed() {
+      const currentDateTime = new Date();
+      const duration = currentDateTime.getTime() - new Date(liveStartedAt).getTime();
+
+      const hours = Math.floor(duration / (1000 * 60 * 60));
+      const minutes = Math.floor((duration / (1000 * 60)) % 60);
+      const seconds = Math.floor((duration / 1000) % 60);
+
+      console.log(
+        "\n[EXECUTE] calculateTimeLapsed :",
+        hours + " hours, " + minutes + " minutes, " + seconds + " seconds",
+        "\n",
+        getTime()
+      );
+
+      // Calculate and display the elapsed time since the broadcast started
+      let timeLapsedText = "시작: ";
+      if (hours > 0) {
+        timeLapsedText += hours + "시간 ";
+        if (minutes > 0) timeLapsedText += minutes + "분 ";
+      } else {
+        timeLapsedText += minutes + "분 ";
+      }
+      timeLapsedText += "전";
+
+      liveStartedAtTxt.innerHTML = timeLapsedText;
+    }
+
+    /* RTCPeerConnection 생성하는 매서드
+      peerConnectionID 는 스트리머에 의해 signaling 서버에서 생성되는 고유값.
+      peerSocketId 는 연결을 하는 peer client 의 socket id.
+      */
+    function createPeerConnection(peerConnectionID, peerSocketId) {
+      console.log("\n[EXECUTE] createPeerConnection", "\n", getTime());
+      console.log("\n[CHECK]peerConnectionID : ", peerConnectionID, ", peerSocketId : ", peerSocketId, "\n", getTime());
+
+      // peer 간 연결을 위한 RTCPeerConnection 객체 생성
+      let peerConnection = new RTCPeerConnection({
+        // ICE 전송 정책. 어떤 형식의 ICE candidate 를 고려할 지에 대한 설정을 나타낸다.
+        // "all","public","relay" 중 선택할 수 있음. 지정해 주지 않으면 기본값은 "all".
+        iceTransportPolicy: "all",
+        // ice server 설정. 설정된 ice server 는 ICE agent 에 의해 사용된다. 보통 STUN 또는 TURN 서버가 쓰임.
+        iceServers: [
+          {
+            urls: "stun:stun.stunprotocol.org", //
+          },
+        ],
+      });
+
+      // peerConnection 에서 각종 이벤트 리스너 등록
+      // 각 이벤트에 대한 설명은 공식 문서 참고.
+
+      // "icecandidate" 이벤트 리스너.
+      // 이벤트 설명 : https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/icecandidate_event
+      peerConnection.onicecandidate = (event) => {
+        console.log("\n[EVENT] peerConnection onicecandidate : ", event, "\n", getTime());
+        if (event.candidate) {
+          console.log("\n[CHECK] has candidate. : ", event.candidate, "\n", getTime());
+
+          // works on both android and web
+          const { sdpMid, sdpMLineIndex, candidate } = event.candidate;
+
+          socket.emit("iceCandidate", {
+            // Do not change it's key-value pair so that it's compatible on both web and android.
+            type: "candidate",
+            peerConnectionID,
+            to: peerSocketId,
+            id: sdpMid,
+            label: sdpMLineIndex,
+            sdp: candidate,
+          });
+        } else {
+          console.log("\n[CHECK] no candidates", "\n", getTime());
+        }
+      };
+
+      /* "track" 이벤트 리스너.
+        "track" 이벤트는 local webRTC layer 에 의해 RTCPeerConnection 에 새로운 track 이 추가되었을 때 발생함.
+        이 이벤트를 통해 들어오는 미디어 스트림을 받아서 표시해 줄 수 있음.
+        이벤트 설명 : https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/track_event
+        */
+      peerConnection.ontrack = (event) => {
+        console.log("\n[EVENT] peerConnection ontrack : ", event, "\n", getTime());
+
+        videoView.srcObject = event.streams[0];
+        videoView.style.transform = "scaleX(-1)"; // 좌우 대칭 mobile 기기랑 통일해 주기
+        console.log("\n[CHECK] videoView srcObject : ", videoView.srcObject, "\n", getTime());
+      };
+
+      // "negotiationneeded" 이벤트 리스너. 이 이벤트가 발생하면 ICE negotiation 이 시작되고 ICE candidate 가 signaling server 를 통해 교환된다.
+      // 이벤트 설명 : https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/negotiationneeded_event
+      peerConnection.onnegotiationneeded = () => {
+        console.log("\n[EVENT] peerConnection onnegotiationneeded : ", event, "\n", getTime());
+        // 시청자에게 보내줄 offer 생성. offer 에는 지원되는 연결 설정 정보, 미디어 stream 정보, 이미 수집된(만약 있다면) ICE candidate 가 포함되어 있음.
+        peerConnection
+          .createOffer()
+          .then(async (offer) => {
+            console.log("\n[CHECK] offer created : ", offer, "\n", getTime());
+            // offer 를 생성하는 데 성공한 경우 생성된 offer 를 caller(본인. 여기서는 스트리머)의 end of connection(요청이 이루어지는 지점. 즉 peerConnection)에 전달해 준다.
+            // TMI : 기술적으로 return 된 offer 는 RFC offer 이다.
+            await peerConnection.setLocalDescription(offer);
+          })
+          .then(() => {
+            console.log("\n[Check] check localDescription : ", peerConnection.localDescription, "\n", getTime());
+            // setLocalDescription 이 성공하면 ICE agent 가 "icecandidate" 이벤트를 RTCPeerConnection 객체에 전송한다.
+
+            // remote peer(스트리머의 경우 시청자) 에게 전송할 offer 데이터 설정.
+            const obj = {
+              type: "offer", // 보내주는 데이터의 type.
+              from: socket.id, // offer 를 보내는 본인의 socket id. remote peer 가 peerConnection 객체를 생성할 때 필요함.
+              peerConnectionID, // 스트리머와 시청자가 연결할 때 사용되는 RTCPeerConnection 객체의 ID. remote peer 가 peerConnection 객체를 생성할 때 필요함.
+              to: peerSocketId, // offer 를 보내줄 시청자의 socket id. 시청자가 여러 명이므로 구분해 줄 값이 필요함.
+              sdp: peerConnection.localDescription.sdp, // offer 를 표현하는 sdp string
+            };
+            console.log("\n[Check] offer obj : ", obj, "\n", getTime());
+            socket.emit("offer", obj); // offer 데이터 전송
+          })
+          .catch((error) => {
+            console.error(error);
+          });
+      };
+
+      /* "removetrack" 이벤트 리스너
+        "removetrack" 은 remote peer 가 본인이 보낸 media 를 제거했을 때 발생한다.
+        이벤트 설명 : https://developer.mozilla.org/en-US/docs/Web/API/MediaStream/removetrack_event
+        */
+      peerConnection.onremovetrack = (event) => {
+        console.log("\n[EVENT] peerConnection onremovetrack : ", event, "\n", getTime());
+        const trackList = videoView.getTracks();
+
+        if (trackList.length === 0) {
+          console.log("\n[CHECK] no trackList!", event, "\n", getTime());
+          closeVideoCall(peerConnectionID);
+        }
+      };
+
+      // "iceconnectionstatechange" 이벤트 리스너
+      // 이벤트 설명 : https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/iceconnectionstatechange_event
+      peerConnection.oniceconnectionstatechange = (event) => {
+        console.log("\n[EVENT] peerConnection oniceconnectionstatechange : ", event, "\n", getTime());
+        switch (peerConnection.iceConnectionState) {
+          case "closed": {
+            console.log("\n[CHECK] iceConnectionState closed", "\n", getTime());
+          }
+          case "failed":
+            {
+              console.log("\n[CHECK] iceConnectionState failed", "\n", getTime());
+              closeVideoCall();
+            }
+            break;
+        }
+      };
+
+      // "icegatheringstatechange" 이벤트 리스너
+      // 이벤트 설명 : https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/icegatheringstatechange_event
+      peerConnection.onicegatheringstatechange = (event) => {
+        console.log("\n[EVENT] peerConnection onicegatheringstatechange : ", event, "\n", getTime());
+        console.log("\n[CHECK] check icegatheringstate : ", event.target.iceGatheringState, "\n", getTime());
+      };
+
+      // "signalingstatechange" 이벤트 리스너
+      // 이벤트 설명 : https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/signalingstatechange_event
+      peerConnection.onsignalingstatechange = (event) => {
+        console.log("\n[EVENT] peerConnection onsignalingstatechange : ", event, "\n", getTime());
+
+        console.log("\n[CHECK] peerConnection signalingState : ", peerConnection.signalingState, "\n", getTime());
+        switch (peerConnection.signalingState) {
+          case "closed":
+            closeVideoCall();
+            break;
+        }
+      };
+
+      peerConnectionList[peerConnectionID] = peerConnection;
+      console.log("\n[CHECK]peerConnection : ", peerConnectionList[peerConnectionID], "\n", getTime());
+    }
+
+    // 연결 호출 종료하기
+    function closeVideoCall(peerConnectionID) {
+      console.log("\n[EXECUTE] peerConnection closeVideoCall : ", "\n", getTime());
+      let peerConnection = peerConnectionList[peerConnectionID];
+
+      if (peerConnection) {
+        peerConnection.ontrack = null;
+        peerConnection.onremovetrack = null;
+        peerConnection.onremovestream = null;
+        peerConnection.onicecandidate = null;
+        peerConnection.oniceconnectionstatechange = null;
+        peerConnection.onsignalingstatechange = null;
+        peerConnection.onicegatheringstatechange = null;
+        peerConnection.onnegotiationneeded = null;
+
+        if (videoView.srcObject) {
+          console.log("\n[CHECK] closeVideoCall has videoView src object : ", videoView.srcObject, "\n", getTime());
+          videoView.srcObject.getTracks().forEach((track) => track.stop());
+        }
+        peerConnection.close();
+        peerConnection = null;
+      }
+
+      videoView.removeAttribute("src");
+      videoView.removeAttribute("srcObject");
+    }
+
+    // socket 생성
+    const socket = io(Signaling_server_URL, {
+      cors: { origin: "*" },
+      query: {
+        userName,
+        roomName,
+        roomId: roomId, // 방송방 식별을 위한 고유 id
+        isStreamer: false,
+      },
+    });
+
+    // 사용자가 socket 서버에 연결되었을 때 발생함.
+    socket.on("connect", async () => {
+      console.log("\n[EVENT] connect. socket.id : ", socket.id, "\n", getTime());
+
+      calculateTimeLapsed(); // 최초로 시간 표시해 주기
+      calculateTimeLapsedInterval = setInterval(calculateTimeLapsed, 60000); // 방송 시작 후 경과 시간 표시해 주는 timer interval 설정하기.
+      videoView.muted = true; // 음소거 처리 여부
+      socket.emit("ready"); // remote peer 와 연결할 준비가 되었다는 event 서버에 보내기
+    });
+
+    // 연결이 끊어진 경우(채팅방을 나간 이후, 또는 기타 이유로 인해)
+    socket.on("disconnect", () => {
+      console.log("\n[EVENT] disconnect. socket id : ", socket.id, "\n", getTime());
+      // 시청자일 경우 interval 제거해 주기
+
+      clearInterval(calculateTimeLapsedInterval);
+    });
+
+    // 스트리머가 라이브 방송 시작하는 경우
+    socket.on("streamer start live", async () => {
+      // 추후에 DB 에 방송 데이터 저장하는 http request 추가하기
+      console.log("\n[EVENT] streamer start live", "\n", getTime());
+    });
+
+    // 시청자가 입장한 경우
+    socket.on("watcher join", async function (data) {
+      console.log("\n[EVENT]watcher join : ", data);
+      const { peerConnectionID, streamerSocketId, watcherSocketId, numberOfWatchers } = data; // signaling 서버로부터 받은 데이터
+      console.log("\n[CHECK]watcher join. client : 시청자", "\n", getTime());
+      numberOfWatchersTxt.innerHTML = `${numberOfWatchers}명 시청중`;
+    });
+
+    // 시청자가 퇴장한 경우
+    socket.on("watcher left", (data) => {
+      console.log("\n[EVENT]watcher left : ", data);
+      const { peerConnectionID, numberOfWatchers } = data;
+      // 스트리머일 경우 시청자가 연결을 위해 생성한 peerConnection 객체를 리스트에서 삭제하기
+      numberOfWatchersTxt.innerHTML = `${numberOfWatchers}명 시청중`;
+    });
+
+    // 채팅을 수신한 경우
+    socket.on("chat message", function (chatMsgObj) {
+      console.log("\n[EVENT] chat message : ", chatMsgObj, "\n", getTime());
+      // 실시간 채팅 데이터(이름, 프로필 사진, 내용)
+      let senderName = chatMsgObj.senderName;
+      let senderProfileImg = chatMsgObj.senderProfileImg;
+      let chatMessageContents = chatMsgObj.chatMessageContents;
+
+      // 각 채팅 div 생성
+      let chatMessageDiv = document.createElement("div");
+      chatMessageDiv.className = "chat-message";
+
+      // 전송자 프로필 사진 랜더링
+      let profileImgView = document.createElement("img");
+      console.log("profileImgView : ", profileImgView);
+      // 전송자의 프로필 이미지가 있는 경우에 이미지 랜더링 해 주기.
+      if (senderProfileImg) {
+        profileImgView.src = `data:image/jpeg;base64,${senderProfileImg}`;
+      } else {
+        profileImgView.src = "/get/image_files/ic_profile_photo.png";
+      }
+      profileImgView.alt = "Image";
+      chatMessageDiv.appendChild(profileImgView);
+
+      // 전송자 이름 랜더링
+      let senderNameTxt = document.createElement("span");
+      senderNameTxt.className = "sender-name";
+      senderNameTxt.textContent = senderName;
+      chatMessageDiv.appendChild(senderNameTxt);
+
+      // 채팅 내용 랜더링
+      let messageContent = document.createElement("span");
+      messageContent.className = "message-content";
+      messageContent.textContent = chatMessageContents;
+
+      // 완성된 채팅 데이터 append
+      chatMessageDiv.appendChild(messageContent);
+      chatContainer.appendChild(chatMessageDiv);
+
+      window.scrollTo(0, document.body.scrollHeight); // 채팅 내용이 append 되면 가장 아래 영역으로 스크롤
+    });
+
+    // 스트리머가 방송 종료한 경우
+    socket.on("end live", async function (msg) {
+      console.log("\n[EVENT] end live : ", msg, "\n", getTime());
+      localStorage.setItem("endLive", "true");
+      location.href = "/rooms";
+    });
+
+    // offer 이벤트 수신(스트리머가 보낸 offer 를 시청자가 수신함)
+    socket.on("offer", async (data) => {
+      console.log("\n[EVENT] offer : ", data, "\n", getTime());
+      const { from, peerConnectionID, videoRatio } = data;
+
+      // offer 이벤트를 수신하면 시청자가 peerConnection 객체 생성. 스트리머에 의해 생성된 peerConnectionID 값 적용해 주기
+      createPeerConnection(peerConnectionID, from);
+
+      // 받은 offer 를 토대로 sessionDescription 생성
+      const desc = new RTCSessionDescription({
+        type: "offer",
+        sdp: data.sdp,
+      });
+
+      let peerConnection = peerConnectionList[peerConnectionID];
+      peerConnection
+        .setRemoteDescription(desc) // remote peer 의 sdp 정보를 peerConnection 에 저장.
+        .then(() => {
+          // 본인의 미디어 데이터 불러오기. 시청자는 해당 없으므로 주석 처리
+          // return navigator.mediaDevices.getUserMedia(mediaConstraints)
+          return;
+        })
+        .then(() => peerConnection.createAnswer()) // caller 에게 보내줄 answer 생성
+        .then(async (answer) => {
+          // peerConnection answer 생성
+          console.log("\n[CHECK] create Answer : ", answer, "\n", getTime());
+          // answer 생성 성공 시 setLocalDescription 을 통해 본인의 peerConnection 에 저장.
+          await peerConnection.setLocalDescription(answer);
+        })
+        .then(() => {
+          console.log("\n[CHECK] create localDescription : ", peerConnection.localDescription, "\n", getTime());
+          // 생성한 answer 스트리머에게 전달
+          const obj = {
+            type: "answer",
+            from: socket.id,
+            to: data.from,
+            sdp: peerConnection.localDescription.sdp,
+          };
+          console.log("\n[Check] answer obj : ", obj, "\n", getTime());
+          socket.emit("answer", obj);
+        });
+    });
+
+    // answer 이벤트 수신(시청자가 보낸 answer 를 스트리머가 수신함)
+    socket.on("answer", async (data) => {
+      console.log("\n[EVENT] answer : ", data, "\n", getTime());
+      const { sdp, peerConnectionID } = data;
+
+      const desc = new RTCSessionDescription({
+        type: "answer",
+        sdp,
+      });
+      let peerConnection = peerConnectionList[peerConnectionID];
+      peerConnection.setRemoteDescription(desc).then(() => {
+        console.log("\n[CHECK] peerConnection setRemoteDescription", "\n", getTime());
+      });
+    });
+
+    // ice 이벤트 수신 시
+    socket.on("iceCandidate", async (data) => {
+      console.log("\n[EVENT] iceCandidate : ", data, "\n", getTime());
+      const { peerConnectionID, id, label, sdp } = data;
+
+      let peerConnection = peerConnectionList[peerConnectionID];
+
+      // works on both android and web.
+      const candidateToAdd = new RTCIceCandidate({
+        sdpMid: id,
+        sdpMLineIndex: label,
+        candidate: sdp, // Do not change it's key-value pair so that it's compatible on both web and android.
+      });
+
+      peerConnection
+        .addIceCandidate(candidateToAdd)
+        .then(() => console.log("\n[EXECUTE] addIceCandidate done", "\n", getTime()))
+        .catch((error) => console.error(error));
+    });
+  </script>
+</html>

@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Pianissimo live streaming web demonstrator</title>
+  </head>
+  <style>
+    body {
+      margin: 0;
+      padding-left: 1rem;
+      padding-right: 1rem;
+      padding-bottom: 3rem;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    #roomNameInput {
+      width: 100%;
+      height: 40px;
+      font-size: 20px;
+      margin-bottom: 10px;
+    }
+    #startLiveBtn {
+      width: 100%;
+      height: 40px;
+      font-size: 20px;
+    }
+    .output {
+      width: 1000;
+      height: 1000;
+      display: inline-block;
+      vertical-align: top;
+    }
+    #canvas {
+      display: none;
+    }
+    #photo {
+      border: 1px solid black;
+      width: 500;
+      height: 500;
+    }
+  </style>
+  <body>
+    <!-- 영상 표시되는 영역 -->
+    <div>
+      <video id="videoView" autoplay></video>
+    </div>
+
+    <div style="width: 500px">
+      <h2>방송 타이틀</h2>
+      <input id="roomNameInput" placeholder="방송 타이틀 입력" />
+      <br />
+      <button id="startLiveBtn">방송 시작</button>
+    </div>
+    <!-- 섬네일 생성 테스트 -->
+    <canvas id="canvas"></canvas>
+  </body>
+
+  <script src="/constants.js"></script>
+  <script type="module">
+    // 영상이 표시되는 영역. 스트리머일 경우에는 본인의 local stream 이 표시되고 시청자일 경우에는 상대방의 stream, 즉 remote stream 이 표시됨.
+    let videoView = document.getElementById("videoView");
+    let videoWidth = 500;
+    let videoHeight = 400;
+    videoView.setAttribute("width", videoWidth);
+    videoView.setAttribute("height", videoHeight);
+
+    let roomNameInput = document.getElementById("roomNameInput");
+    let startLiveBtn = document.getElementById("startLiveBtn");
+
+    // 스트리머, 시청자 client 에 미디어 데이터를 표시할 때 사용할 제약.
+    const mediaConstraints = {
+      audio: true, // 전송해 줄 stream 에 audio track 포함 여부. 포함시키지 않으면 소리 데이터는 전송되지 않음.
+      // 전송해 줄 stream 에 video track 포함 여부. 포함시키지 않으면 영상 데이터는 전송되지 않음.
+      // true or false 로 나타낼 수 있고 상세하게 크기를 설정할 수 있음.
+      video: {
+        width: videoWidth,
+        height: videoHeight,
+      },
+    };
+
+    // 썸네일 이미지 생성 관련 태그
+    let canvas = document.getElementById("canvas");
+    let photo = document.getElementById("photo");
+
+    // 송출해 줄 미디어 데이터 불러오기
+    let localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
+    videoView.srcObject = localStream; // return 된 stream 을 스트리머 본인의 videoView 에 표시
+    videoView.style.transform = "scaleX(-1)"; // 좌우 대칭 mobile 기기랑 통일해 주기
+    videoView.muted = true; // 음소거 처리 여부
+
+    // 라이브 방송 시작 버튼 이벤트 처리
+    startLiveBtn.onclick = () => {
+      let roomName = roomNameInput.value;
+      if (roomName) {
+        createLiveRoom(roomName);
+      } else {
+        alert("방송 타이틀을 입력해 주세요");
+      }
+    };
+
+    // 방 id로 사용될 uuid 생성
+    function uuid() {
+      return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c) =>
+        (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)
+      );
+    }
+
+    // 현재 시간 생성(라이브 시작 시간으로 사용)
+    function getCurrentTime() {
+      const now = new Date();
+
+      // Get the date components
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, "0");
+      const day = String(now.getDate()).padStart(2, "0");
+
+      // Get the time components
+      const hours = String(now.getHours()).padStart(2, "0");
+      const minutes = String(now.getMinutes()).padStart(2, "0");
+      const seconds = String(now.getSeconds()).padStart(2, "0");
+
+      // Construct the formatted time string. Can change format by replacing "-" into "." or something.
+      const formattedTime = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+
+      return formattedTime;
+    }
+
+    // 썸네일 이미지 생성
+    function takeThumbnailImg() {
+      console.log("takeThumbnailImg");
+
+      const context = canvas.getContext("2d");
+
+      canvas.width = videoWidth;
+      canvas.height = videoHeight;
+
+      context.translate(canvas.width, 0);
+      context.scale(-1, 1);
+      context.drawImage(videoView, 0, 0, videoWidth, videoHeight);
+
+      const thumbnailImage = canvas.toDataURL("image/png").replaceAll("data:image/png;base64,", ""); // Remove "data:image/png;base64" so that it's compatible on both web and android os.
+      console.log("thumbnailImage :", thumbnailImage);
+
+      return thumbnailImage;
+    }
+
+    // 라이브 방송방 생성
+    function createLiveRoom(roomName_param) {
+      const token = localStorage.getItem("token");
+      const userId = localStorage.getItem("userId");
+      const roomId = uuid();
+      const liveStartedAt = getCurrentTime();
+      const data = {
+        roomId,
+        hostId: userId,
+        roomName: roomName_param,
+        isLive: true,
+        liveStartedAt,
+        thumbnailImage: takeThumbnailImg(),
+        numberOfWatchers: 0,
+      };
+
+      const requestURL = Main_server_URL + "test_files/createLiveRoom_web.php";
+
+      return fetch(requestURL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: token ? `Bearer ${token}` : undefined,
+        },
+        body: JSON.stringify(data),
+      })
+        .then(async (response) => {
+          //console.log("response from main server : ", response);
+          const res = await response.json();
+          console.log("response from main server(json) : ", res);
+
+          localStorage.setItem("roomName", roomName_param);
+          localStorage.setItem("roomId", roomId);
+          localStorage.setItem("liveStartedAt", liveStartedAt);
+          location.href = `/live/streamer/${roomId}`;
+        })
+        .catch((error) => {
+          console.error("response from main server : ", error);
+          alert("요청 중 에러가 발생하였습니다. 잠시 후 다시 시도해 주세요");
+        });
+    }
+  </script>
+</html>

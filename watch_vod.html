@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Pianissimo live streaming web demonstrator</title>
+  </head>
+  <style>
+    body {
+      margin: 0;
+      padding-left: 1rem;
+      padding-right: 1rem;
+      padding-bottom: 3rem;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    #bottomTab {
+      position: fixed;
+      width: 100%;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      display: flex;
+    }
+    #form {
+      background: rgba(0, 0, 0, 0.15);
+      padding: 0.25rem;
+      left: 0;
+      right: 0;
+      display: flex;
+      flex: 1;
+      height: 3rem;
+      box-sizing: border-box;
+      backdrop-filter: blur(10px);
+    }
+    #exit {
+      padding: 10px;
+      font-size: 20px;
+    }
+    #input {
+      border: none;
+      padding: 0 1rem;
+      flex-grow: 1;
+      border-radius: 2rem;
+      margin: 0.25rem;
+    }
+    #input:focus {
+      outline: none;
+    }
+    #form > button {
+      background: #333;
+      border: none;
+      padding: 0 1rem;
+      margin: 0.25rem;
+      border-radius: 3px;
+      outline: none;
+      color: #fff;
+    }
+    .chat-message {
+      display: flex;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .chat-message img {
+      width: 40px;
+      height: 40px;
+      object-fit: cover;
+      border-radius: 50%;
+      margin-right: 10px;
+      border-color: black;
+      border-width: 2px;
+    }
+    .chat-message .sender-name {
+      font-weight: bold;
+      font-size: 20px;
+      margin-right: 10px;
+    }
+    .chat-message .message-content {
+      flex-grow: 1;
+    }
+    #liveInfoDiv {
+      margin-top: 10px;
+      margin-bottom: 20px;
+    }
+    #hostProfileImageView {
+      width: 80px;
+      height: 80px;
+      object-fit: cover;
+      border-radius: 80px;
+      margin-right: 10px;
+      border-color: black;
+      border-width: 2px;
+    }
+  </style>
+  <body>
+    <h2>라이브 다시보기</h2>
+    <!-- 영상 표시되는 영역 -->
+    <div>
+      <video id="videoView" autoplay></video>
+    </div>
+    <div id="liveInfoDiv">
+      <div style="display: flex; flex-direction: row; align-items: center">
+        <img id="hostProfileImageView" />
+        <div>
+          <h2 id="liveTitle" style="margin: 0"></h2>
+          <span id="hostNameTxt">hostName</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="chatContainer"></div>
+    <div id="bottomTab">
+      <form id="form" action=""><input id="input" autocomplete="off" /><button>send</button></form>
+      <button id="exit">exit</button>
+    </div>
+  </body>
+
+  <script src="/constants.js"></script>
+  <script type="module">
+    const userName = localStorage.getItem("userName"); // 스트리머 또는 시청자 이름
+    const hostName = localStorage.getItem("hostName") || ""; // 스트리머 이름
+    const hostProfileImage = localStorage.getItem("hostProfileImage") || ""; // 스트리머 프로필 사진
+    const roomName = localStorage.getItem("roomName"); // 방송방 이름
+    const roomId = localStorage.getItem("roomId"); // 방송방 고유 id
+    const liveStartedAt = localStorage.getItem("liveStartedAt"); // 방송방 이름
+    const numberOfWatchers = localStorage.getItem("numberOfWatchers"); // 방송방 시청자 수
+
+    let liveTitle = document.getElementById("liveTitle"); // 표시해 줄 방송방 제목 element
+    liveTitle.innerHTML = roomName; // 방송방 이름 데이터 입력
+
+    // 스트리머 이름 랜더링 해 주기. 시청자인 경우에만 해당
+    let hostNameTxt = document.getElementById("hostNameTxt"); // 스트리머 이름
+    hostNameTxt.innerHTML = hostName;
+
+    // 스트리머 프로필 사진 랜더링 해 주기. 시청자인 경우에만 해당
+    let hostProfileImageView = document.getElementById("hostProfileImageView"); // 스트리머 이름
+    if (hostProfileImage && hostProfileImage !== "null") {
+      hostProfileImageView.src = `data:image/jpeg;base64,${hostProfileImage}`;
+    } else {
+      hostProfileImageView.src = "/live/image_files/ic_profile_photo.png";
+    }
+    hostProfileImageView.alt = "Image";
+    hostProfileImageView.innerHTML = hostName;
+
+    let numberOfWatchersTxt = document.getElementById("numberOfWatchersTxt"); // 라이브 방송 실시간 시청자 수 표시할 span
+
+    let liveStartedAtTxt = document.getElementById("liveStartedAtTxt"); // 라이브 시작 후 경과한 시간 표시할 span
+    let calculateTimeLapsedInterval; // 경과한 시간을 체크할 timer interval 객체
+
+    let form = document.getElementById("form"); // 실시간 채팅 input form
+    let input = document.getElementById("input"); // 실시간 채팅 input
+    let exitBtn = document.getElementById("exit"); // 방송방 나가기 버튼
+
+    // 영상이 표시되는 영역. 스트리머일 경우에는 본인의 local stream 이 표시되고 시청자일 경우에는 상대방의 stream, 즉 remote stream 이 표시됨.
+    let videoView = document.getElementById("videoView");
+    let videoWidth = 500;
+    let videoHeight = 400;
+    videoView.setAttribute("width", videoWidth);
+    videoView.setAttribute("height", videoHeight);
+
+    // 나가기 버튼에 이벤트 등록
+    exitBtn.onclick = () => {
+      location.href = "/rooms";
+    };
+
+    // 스트리머, 시청자 client 에 미디어 데이터를 표시할 때 사용할 제약.
+    const mediaConstraints = {
+      audio: true, // 전송해 줄 stream 에 audio track 포함 여부. 포함시키지 않으면 소리 데이터는 전송되지 않음.
+      // 전송해 줄 stream 에 video track 포함 여부. 포함시키지 않으면 영상 데이터는 전송되지 않음.
+      // true or false 로 나타낼 수 있고 상세하게 크기를 설정할 수 있음.
+      video: {
+        width: videoWidth,
+        height: videoHeight,
+      },
+    };
+
+    // 로그에 시간을 남기기 위한 시간 생성 매서드
+    function getTime() {
+      const now = new Date();
+      const hours = now.getHours().toString().padStart(2, "0");
+      const minutes = now.getMinutes().toString().padStart(2, "0");
+      const seconds = now.getSeconds().toString().padStart(2, "0");
+      const milliseconds = now.getMilliseconds().toString().padStart(3, "0");
+      return `Time : ${hours}:${minutes}:${seconds}:${milliseconds}`;
+    }
+  </script>
+</html>

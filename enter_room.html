@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Pianissimo live streaming web demonstrator</title>
+  </head>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    #userName {
+      display: block;
+      font-size: 35px;
+      margin-bottom: 20px;
+    }
+    #nameInput {
+      width: 200px;
+      font-size: 35px;
+      margin-bottom: 20px;
+    }
+    .eachBtn {
+      display: block;
+      margin-bottom: 10px;
+      font-size: 35px;
+    }
+
+    .eachBroadcastDiv {
+      margin-bottom: 30px;
+      width: 300px;
+    }
+
+    .thumbnailImgDiv {
+      border-width: 1px;
+      width: 300px;
+      height: 200px;
+      position: relative;
+    }
+
+    .thumbnailImgTag {
+      border-width: 1px;
+      width: 300px;
+      height: 200px;
+      object-fit: contain;
+      object-position: center;
+      background-color: black;
+    }
+
+    .isLiveTagSpan {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      padding: 5px 10px;
+      background-color: red;
+      color: white;
+    }
+
+    .broadcastInfoDiv {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      margin-top: 10px;
+    }
+
+    .hostProfileImgTag {
+      margin-right: 20px;
+      border-width: 1px;
+      border-radius: 60px;
+      width: 60px;
+      height: 60px;
+      object-position: center;
+    }
+
+    .broadcastTitleSpan {
+      font-size: 20px;
+      font-weight: bold;
+    }
+  </style>
+  <body>
+    <h1>라이브 방송 목록</h1>
+    <div id="broadcastListDiv"></div>
+  </body>
+
+  <script src="/constants.js"></script>
+  <script type="module">
+    let pageIndex;
+    let loadMoreData;
+
+    const userName = localStorage.getItem("userName");
+    const endLive = localStorage.getItem("endLive");
+
+    const broadcastListDiv = document.getElementById("broadcastListDiv");
+
+    if (endLive) {
+      alert("방송이 종료되었습니다.");
+      localStorage.setItem("endLive", "");
+    }
+
+    // 방송 목록 랜더링하기
+    function renderBroadcastData(eachBroadcastInfo) {
+      const { hostName, hostProfileImage, id, isLive, liveStartedAt, numberOfWatchers, roomName, thumbnailImage } =
+        eachBroadcastInfo; // id 는 roomId 값.
+      // Create the main container div
+      const containerDiv = document.createElement("div");
+      containerDiv.classList.add("eachBroadcastDiv");
+      containerDiv.onclick = () => {
+        localStorage.setItem("hostName", hostName);
+        localStorage.setItem("hostProfileImage", hostProfileImage);
+        localStorage.setItem("roomName", roomName);
+        localStorage.setItem("roomId", id);
+
+        if (isLive) {
+          localStorage.setItem("isStreamer", "");
+          localStorage.setItem("userName", userName);
+          localStorage.setItem("liveStartedAt", liveStartedAt);
+          location.href = `/live/watcher/${id}`;
+        } else {
+          location.href = `/watch_vod/${id}`;
+        }
+      };
+
+      // Create the thumbnail image div
+      const thumbnailDiv = document.createElement("div");
+      thumbnailDiv.classList.add("thumbnailImgDiv");
+
+      // Create the thumbnail image tag
+      const thumbnailImg = document.createElement("img");
+      thumbnailImg.classList.add("thumbnailImgTag");
+
+      thumbnailImg.src = `data:image/jpeg;base64,${thumbnailImage}`;
+      thumbnailDiv.appendChild(thumbnailImg); // Append thumbnail image
+
+      // Create the "실시간" span tag
+      if (isLive) {
+        const isLiveSpan = document.createElement("span");
+        isLiveSpan.classList.add("isLiveTagSpan");
+
+        isLiveSpan.innerText = "실시간";
+
+        // Append "실시간" span to the thumbnail div
+        thumbnailDiv.appendChild(isLiveSpan);
+      }
+
+      // Create the live info div
+      const broadcastInfoDiv = document.createElement("div");
+      broadcastInfoDiv.classList.add("broadcastInfoDiv");
+
+      // Create the host profile image tag
+      const hostProfileImg = document.createElement("img");
+      hostProfileImg.classList.add("hostProfileImgTag");
+
+      if (hostProfileImage) {
+        hostProfileImg.src = `data:image/jpeg;base64,${hostProfileImage}`;
+      } else {
+        //hostProfileImg.src = "/live/image_files/ic_profile_photo.png";
+        hostProfileImg.src = "/get/image_files/ic_profile_photo.png";
+      }
+
+      // Create the live title span
+      const textInfoDiv = document.createElement("div");
+
+      const broadcastTitleSpan = document.createElement("span");
+      broadcastTitleSpan.classList.add("broadcastTitleSpan");
+      broadcastTitleSpan.innerText = roomName;
+
+      // Create the member name span
+      const memberNameSpan = document.createElement("span");
+      memberNameSpan.innerText = hostName;
+
+      // Create the number of viewers span
+      const viewersSpan = document.createElement("span");
+      viewersSpan.innerText = numberOfWatchers + "명 시청중";
+
+      // Append live title, member name, and viewers spans to the live info div
+      textInfoDiv.appendChild(broadcastTitleSpan);
+      textInfoDiv.appendChild(document.createElement("br"));
+      textInfoDiv.appendChild(memberNameSpan);
+      textInfoDiv.appendChild(document.createElement("br"));
+      textInfoDiv.appendChild(viewersSpan);
+      textInfoDiv.appendChild(document.createElement("br"));
+
+      broadcastInfoDiv.appendChild(hostProfileImg);
+      broadcastInfoDiv.appendChild(textInfoDiv);
+
+      // Append thumbnail div and live info div to the main container div
+      containerDiv.appendChild(thumbnailDiv);
+      containerDiv.appendChild(broadcastInfoDiv);
+
+      // Append the main container div to the document body
+      broadcastListDiv.appendChild(containerDiv);
+
+      /*
+      생성되는 html tag
+      <div class="eachBroadcastDiv">
+        <div class="thumbnailImgDiv">
+          <img class="thumbnailImgTag" />
+          <span class="isLiveTagSpan">실시간</span>
+        </div>
+        <div class="broadcastInfoDiv">
+          <img class="hostProfileImgTag" src="/live/image_files/ic_profile_photo.png" />
+          <div>
+            <span class="broadcastTitleSpan">방송 타이틀</span><br />
+            <span>회원 이름</span><br />
+            <span>n명 시청중</span><br />
+          </div>
+        </div>
+      </div>
+      */
+    }
+
+    // 방송방 목록 불러오기
+    function getBroadcastList() {
+      const data = {
+        pageIndex: 0,
+      };
+
+      const params = new URLSearchParams();
+      for (let key in data) {
+        params.append(key, data[key]);
+      }
+
+      const requestURL = Main_server_URL + "test_files/getBroadcastData_web.php?" + params;
+
+      return fetch(requestURL, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: true,
+        },
+      })
+        .then(async (response) => {
+          //console.log("response from main server : ", response);
+          const json = await response.json();
+          console.log("response from main server(json) : ", json);
+
+          let broadcastListDiv = document.getElementById("broadcastListDiv");
+          let roomListArray = json.data.broadcasts;
+
+          if (roomListArray.length) {
+            for (let i = 0; i < roomListArray.length; i++) {
+              const eachBroadcastInfo = roomListArray[i];
+              renderBroadcastData(eachBroadcastInfo);
+            }
+          } else {
+            let noDataSpan = document.createElement("span");
+            noDataSpan.innerHTML = "진행 중인 방송이 없습니다.";
+            broadcastListDiv.append(noDataSpan);
+          }
+        })
+        .catch((error) => {
+          console.error("response from main server : ", error);
+          alert("요청 중 에러가 발생하였습니다. 잠시 후 다시 시도해 주세요");
+        });
+    }
+
+    // 라이브 방송방 목록 불러오기
+    getBroadcastList();
+  </script>
+</html>

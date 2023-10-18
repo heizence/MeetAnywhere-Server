@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Pianissimo live streaming web demonstrator</title>
+  </head>
+  <style>
+    .eachBtn {
+      display: block;
+      margin-bottom: 20px;
+      font-size: 30px;
+    }
+  </style>
+  <body>
+    <ul id="messages"></ul>
+    <div class="videos__group">
+      <div id="video-grid"></div>
+    </div>
+    <button class="eachBtn" id="startLiveBtn">방송 시작하기</button>
+    <button class="eachBtn" id="showRoomsBtn">방송방 조회</button>
+    <button class="eachBtn" id="signoutBtn">로그아웃</button>
+  </body>
+
+  <script type="module">
+    var messages = document.getElementById("messages");
+    var startLiveBtn = document.getElementById("startLiveBtn");
+    var showRoomsBtn = document.getElementById("showRoomsBtn");
+    var signoutBtn = document.getElementById("signoutBtn");
+
+    // 라이브 방송 시작 버튼 이벤트 등록
+    startLiveBtn.onclick = () => {
+      location.href = "/startLive";
+    };
+
+    // 라이브 방송방 조회 버튼 이벤트 등록
+    showRoomsBtn.onclick = () => {
+      location.href = "/rooms";
+    };
+
+    // 로그아웃 버튼 이벤트 등록
+    signoutBtn.onclick = () => {
+      localStorage.setItem("token", "");
+      localStorage.setItem("userId", "");
+      localStorage.setItem("userName", "");
+      localStorage.setItem("userProfileImg", "");
+      location.href = "/";
+    };
+  </script>
+</html>
