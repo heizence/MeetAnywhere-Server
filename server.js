@@ -11,7 +11,7 @@ const { v4 } = require("uuid");
 
 // Signaling 서버(본 서버)가 실행되는 port number
 // constants.js 파일에 Port_number 로 정의된 변수값과 일치해야 함. 반드시 확인하기.
-const Port_number = 8080;
+const Port_number = 8082;
 
 const app = express();
 app.use(express.static("public"));
@@ -29,6 +29,31 @@ function getTime() {
   const seconds = now.getSeconds().toString().padStart(2, "0");
   const milliseconds = now.getMilliseconds().toString().padStart(3, "0");
   return `${hours}:${minutes}:${seconds}:${milliseconds}`;
+}
+
+// 회의 ID 생성(11자리 숫자)
+function generateConferenceId() {
+  // Generate a random number between 0 and 1 (exclusive of 1).
+  const randomFraction = Math.random();
+
+  // Multiply the random fraction by 1e11 (10^11) to get an 11-digit number.
+  const randomNumber = Math.floor(randomFraction * 1e11);
+
+  return randomNumber.toString().padStart(11, "0");
+}
+
+// 회의 암호 생성
+function generateConferencePassword() {
+  const characters = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  const stringLength = 6;
+  let randomString = "";
+
+  for (let i = 0; i < stringLength; i++) {
+    const randomIndex = Math.floor(Math.random() * characters.length);
+    randomString += characters.charAt(randomIndex);
+  }
+
+  return randomString;
 }
 
 app.get("/constants.js", (req, res) => {
@@ -52,12 +77,12 @@ app.get("/rooms", (req, res) => {
   res.sendFile(__dirname + "/enter_room.html");
 });
 
-app.get("/live/watcher/:id", (req, res) => {
+app.get("/live/participant/:id", (req, res) => {
   res.sendFile(__dirname + "/live_watcher.html");
 });
 
-app.get("/live/streamer/:id", (req, res) => {
-  res.sendFile(__dirname + "/live_streamer.html");
+app.get("/live/host/:id", (req, res) => {
+  res.sendFile(__dirname + "/live_host.html");
 });
 
 app.get("/watch_vod/:id", (req, res) => {
@@ -68,12 +93,12 @@ app.get("/watch_vod/:id", (req, res) => {
 //app.use("/live/image_files", express.static(__dirname + "/image_files"));
 app.use("/get/image_files", express.static(__dirname + "/image_files"));
 
-// 라이브 방송방 목록 객체
-let roomListObj = {};
+// 회의실 목록 객체
+let conferenceListObj = {};
 
-// 각 라이브 방송방 시청자 수
-// roomId : (숫자) 형식으로 저장
-let numberOfWatchersForEachRoom = {};
+// 각 회의실 참석자 수
+// conferenceId : (숫자) 형식으로 저장
+let numberOfParticipantsForEachRoom = {};
 
 // io 생성
 const io = new Server(httpServer, {
@@ -88,66 +113,62 @@ io.on("connection", (socket) => {
   console.log("\n#[server.js] connection", "\n", getTime());
   console.log("\n#socket query info : ", { ...socket.handshake.query, socketId: socket.id }, "\n", getTime());
 
-  const isStreamer = socket.handshake.query.isStreamer;
-  const roomName = socket.handshake.query.roomName;
-  const roomId = socket.handshake.query.roomId; // 방송방 식별을 위한 고유 id
+  let conferenceId = socket.handshake.query.conferenceId; // 회의실 식별을 위한 고유 id
   const userName = socket.handshake.query.userName;
 
   let peerConnectionID; // client 에서 RTCPeerConnection 객체를 구분해 줄 고유 ID
 
-  // 로컬 비디오 스트림이 화면에 표시됨. 가장 첫 번째로 발생하는 이벤트
-  socket.on("ready", () => {
-    console.log("\n#[server.js] ready", "\n", getTime());
+  // 호스트가 회의실 생성하기
+  socket.on("create new conference", () => {
+    console.log("\n#[server.js] create new conference", "\n", getTime());
+    conferenceId = generateConferenceId();
+    socket.join(conferenceId); // 회의실 생성 및 입장은 conferenceId 를 통해서 하기. 이름이 중복되는 경우가 있음.
 
-    // room 이 존재하는 경우(방송이 진행중인 경우)
+    let conferencePassword = generateConferencePassword();
+    conferenceListObj[conferenceId] = {
+      hostSocketId: socket.id,
+      conferencePassword,
+    };
 
-    socket.join(roomId); // 방송방 생성 및 입장은 roomId 를 통해서 하기. 이름이 중복되는 경우가 있음.
-    // 스트리머일 경우 "Streamer start live" 이벤트 발생, 시청자일 경우 "Watcher join" 이벤트 발생
-    if (isStreamer === "true") {
-      console.log("\n#[server.js] Streamer start live", "\n", getTime());
+    numberOfParticipantsForEachRoom[conferenceId] = 0; // 참석자 수 설정.
+    console.log("conference ID : ", conferenceId);
+    // 회의실 생성 완료
 
-      roomListObj[roomName] = {
-        streamerSocketId: socket.id,
-        roomId: roomId,
-      };
+    io.to(conferenceId).emit("conference created", {
+      hostSocketId: socket.id,
+      conferenceId: conferenceId,
+      conferencePassword,
+    });
 
-      numberOfWatchersForEachRoom[roomId] = 0; // 시청자 수 설정.
-
-      roomListObj[roomName] = {
-        streamerSocketId: socket.id,
-        roomId: roomId,
-      };
-
-      // socket 에서 room 생성 후 DB 에 방송 정보 저장을 위해 roomId 보내주기. 스트리머만 해당.
-      io.to(roomId).emit("streamer start live", {
-        streamerSocketId: socket.id,
-        roomId,
-      });
-    } else {
-      console.log("\n#[server.js] watcher join", "\n", getTime());
-      const watcherName = socket.handshake.query.userName;
-
-      peerConnectionID = v4(); // 신규 시청자가 peerConnectionID 를 생성(기존 시청자는 해당 없음)
-      console.log("\n# check peerConnectionID : ", peerConnectionID);
-
-      numberOfWatchersForEachRoom[roomId] += 1; // 시청자 수 갱신.
-      console.log("\n#[server.js] numberOfWatchers : ", numberOfWatchersForEachRoom[roomId]);
-
-      io.to(roomId).emit("watcher join", {
-        watcherName,
-        watcherSocketId: socket.id,
-        streamerSocketId: roomListObj[roomName].streamerSocketId,
-        peerConnectionID, // 스트리머에게 전달
-        numberOfWatchers: numberOfWatchersForEachRoom[roomId],
-      });
-    }
+    console.log("\n#[server.js] check conferenceListObj : ", conferenceListObj, "\n", getTime());
   });
 
-  // 시청자 또는 스트리머가 채팅 입력 시 채팅 내용 전송해 주기
-  socket.on("chat message", (data) => {
-    console.log("\n#[server.js] chat message : ", data, "\n", getTime());
+  // 회의 참석 요청하기
+  socket.on("request join", () => {
+    console.log("\n#[server.js] request join", "\n", getTime());
+    const participantName = socket.handshake.query.userName;
+    socket.join(conferenceId); // 방송방 생성 및 입장은 conferenceId 를 통해서 하기. 이름이 중복되는 경우가 있음.
 
-    io.to(roomId).emit("chat message", {
+    peerConnectionID = v4(); // 신규 참석자가 peerConnectionID 를 생성(기존 참석자는 해당 없음)
+    console.log("\n# check peerConnectionID : ", peerConnectionID);
+
+    numberOfParticipantsForEachRoom[conferenceId] += 1; // 참석자 수 갱신.
+    console.log("\n#[server.js] numberOfParticipants : ", numberOfParticipantsForEachRoom[conferenceId]);
+
+    io.to(conferenceId).emit("participant joined", {
+      participantName,
+      participantSocketId: socket.id,
+      hostSocketId: conferenceListObj[conferenceId].hostSocketId,
+      peerConnectionID, // 호스트에게 전달
+      numberOfParticipants: numberOfParticipantsForEachRoom[conferenceId],
+    });
+  });
+
+  // 참석자 또는 호스트가 채팅 입력 시 채팅 내용 전송해 주기
+  socket.on("new chat message", (data) => {
+    console.log("\n#[server.js] new chat message : ", data, "\n", getTime());
+
+    io.to(conferenceId).emit("new chat message", {
       senderUserId: data.senderUserId,
       senderProfileImg: data.senderProfileImg,
       senderName: userName,
@@ -155,10 +176,10 @@ io.on("connection", (socket) => {
     });
   });
 
-  // 스트리머가 offer 보낸 후 시청자에게 offer 보내기
+  // 호스트가 offer 보낸 후 참석자에게 offer 보내기
   socket.on("offer", (data) => {
     console.log("\n#[server.js] offer : ", data, "\n", getTime());
-    peerConnectionID = data.peerConnectionID; // offer 를 보내는 주체인 streamer 는 peerConnectionID 를 서버에서 생성하지 않고 local 에서 생성함.
+    peerConnectionID = data.peerConnectionID; // offer 를 보내는 주체인 host 는 peerConnectionID 를 서버에서 생성하지 않고 local 에서 생성함.
     console.log("\n# check peerConnectionID : ", peerConnectionID);
     io.to(data.to).emit("offer", {
       ...data,
@@ -166,7 +187,7 @@ io.on("connection", (socket) => {
     });
   });
 
-  // 시청자가 스트리머에게 offer 받고 answer 보냈을 때 처리
+  // 참석자가 호스트에게 offer 받고 answer 보냈을 때 처리
   socket.on("answer", (data) => {
     console.log("\n#[server.js] answer : ", data, "\n", getTime());
     console.log("\n# check peerConnectionID : ", peerConnectionID);
@@ -184,40 +205,64 @@ io.on("connection", (socket) => {
     });
   });
 
-  // 특정 시청자가 채팅방에서 나갈때
+  // 특정 참석자가 채팅방에서 나갈때
   // disconnecting 이벤트가 먼저 발생하고 disconnect 이벤트가 발생함
   socket.on("disconnect", () => {
     const userName = socket.handshake.query.userName;
     console.log("\n#[server.js] socket disconnect : ", userName, "\n", getTime());
     console.log("#[server.js] socket id : ", socket.id, "\n", getTime());
-  });
 
-  // 시청자가 방송방에서 퇴장했을 때
-  socket.on("watcher left", () => {
-    console.log("\n#[server.js] watcher left", "\n", getTime());
-    console.log("#[server.js] watcher name : ", userName);
-    console.log("#[server.js] watcher socket id : ", socket.id);
-
-    numberOfWatchersForEachRoom[roomId] -= 1; // 시청자 수 갱신.
-    console.log("\n#[server.js] numberOfWatchers : ", numberOfWatchersForEachRoom[roomId]);
-    io.to(roomId).emit("watcher left", {
-      watcherName: userName,
-      watcherSocketId: socket.id,
+    numberOfParticipantsForEachRoom[conferenceId] -= 1; // 참석자 수 갱신.
+    console.log("\n#[server.js] numberOfParticipants : ", numberOfParticipantsForEachRoom[conferenceId]);
+    io.to(conferenceId).emit("participant left", {
+      participantName: userName,
+      participantSocketId: socket.id,
       peerConnectionID,
-      numberOfWatchers: numberOfWatchersForEachRoom[roomId],
+      numberOfParticipants: numberOfParticipantsForEachRoom[conferenceId],
     });
   });
 
-  // 스트리머가 방송 종료했을 때
-  socket.on("end live", () => {
-    console.log("\n#[server.js] quit live", "\n", getTime());
-    console.log("#[server.js] streamer name : ", userName, "\n", getTime());
-    console.log("#[server.js] streamer socket id : ", socket.id, "\n", getTime());
-    console.log("#[server.js] room name : ", roomName, "\n", getTime());
+  // 참석자가 방송방에서 퇴장했을 때
+  socket.on("participant left", () => {
+    console.log("\n#[server.js] participant left", "\n", getTime());
+    console.log("#[server.js] participant name : ", userName);
+    console.log("#[server.js] participant socket id : ", socket.id);
 
-    delete roomListObj[roomName];
-    delete numberOfWatchersForEachRoom[roomId];
-    io.to(roomId).emit("end live");
+    numberOfParticipantsForEachRoom[conferenceId] -= 1; // 참석자 수 갱신.
+    console.log("\n#[server.js] numberOfParticipants : ", numberOfParticipantsForEachRoom[conferenceId]);
+    io.to(conferenceId).emit("participant left", {
+      participantName: userName,
+      participantSocketId: socket.id,
+      peerConnectionID,
+      numberOfParticipants: numberOfParticipantsForEachRoom[conferenceId],
+    });
+  });
+
+  // 호스트가 회의 전체 종료했을 때
+  socket.on("end conference", () => {
+    console.log("\n#[server.js] end conference", "\n", getTime());
+    console.log("#[server.js] host name : ", userName, "\n", getTime());
+    console.log("#[server.js] host socket id : ", socket.id, "\n", getTime());
+    console.log("#[server.js] conferenceId : ", conferenceId, "\n", getTime());
+
+    delete conferenceListObj[conferenceId];
+    delete numberOfParticipantsForEachRoom[conferenceId];
+    io.to(conferenceId).emit("end conference");
+  });
+
+  // 호스트가 혼자만 회의에서 나갔을 때
+  socket.on("host left", (data) => {
+    console.log("\n#[server.js] host left", "\n", getTime());
+    console.log("#[server.js] host name : ", userName, "\n", getTime());
+    console.log("#[server.js] host socket id : ", socket.id, "\n", getTime());
+    console.log("#[server.js] data : ", data, "\n", getTime());
+
+    numberOfParticipantsForEachRoom[conferenceId] -= 1; // 참석자 수 갱신.
+    console.log("\n#[server.js] numberOfParticipants : ", numberOfParticipantsForEachRoom[conferenceId]);
+
+    io.to(conferenceId).emit("host left", {
+      newHost: "", // 새로운 호스트 지정해 주기
+    });
   });
 });
 
