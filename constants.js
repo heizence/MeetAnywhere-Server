@@ -5,7 +5,7 @@ const Main_server_port_number = 8000; // Main 서버가 실행되는 port number
 
 // Signaling 서버(본 서버)가 실행되는 port number
 // server.js 파일에 Port_number 로 정의된 변수값과 일치해야 함. 반드시 확인하기.
-const Signaling_server_port_number = 8080;
+const Signaling_server_port_number = 8082;
 
 const isHome = true; // 재택근무 여부
 
