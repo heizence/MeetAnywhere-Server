@@ -8,17 +8,13 @@ const express = require("express");
 const { createServer } = require("http");
 const { Server } = require("socket.io");
 const { v4 } = require("uuid");
-
-// Signaling 서버(본 서버)가 실행되는 port number
-// constants.js 파일에 Port_number 로 정의된 변수값과 일치해야 함. 반드시 확인하기.
-const Port_number = 8082;
+const { port } = require("./config.js");
 
 const app = express();
-app.use(express.static("public"));
 const httpServer = createServer(app);
 
-httpServer.listen(Port_number, () => {
-  console.log("\n#[server.js] started at port", Port_number, "\n", getTime());
+httpServer.listen(port, () => {
+  console.log("\n#[server.js] started at port", port, "\n", getTime());
 });
 
 // 시간 생성
@@ -44,7 +40,7 @@ function generateConferenceId() {
 
 // 회의 암호 생성
 function generateConferencePassword() {
-  const characters = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  const characters = "0123456789ABCDEFGHJKLMNOPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"; // 알파벳 I와 l은 혼동될 수 있으므로 제외
   const stringLength = 6;
   let randomString = "";
 
@@ -56,49 +52,48 @@ function generateConferencePassword() {
   return randomString;
 }
 
-app.get("/constants.js", (req, res) => {
-  res.setHeader("Content-Type", "application/javascript"); // Set MIME type to JavaScript
-  res.sendFile(__dirname + "/constants.js");
-});
+// 참석자 목록에서 참석자 삭제하기
+async function removeParticipantFromList(conferenceId, participantId) {
+  let participantsList = conferenceListObj[conferenceId].participantsList; // do not delete!
+  conferenceListObj[conferenceId].participantsList = await participantsList.filter((each) => each.id !== participantId);
 
-app.get("/", (req, res) => {
-  res.sendFile(__dirname + "/signin.html");
-});
+  console.log("check list after remove : " + JSON.stringify(participantsList));
+}
 
-app.get("/main", (req, res) => {
-  res.sendFile(__dirname + "/main.html");
-});
+// 참석자 목록에서 참석자 삭제하기. type : "mic" or "video"
+async function editMicOrVideoStatus(conferenceId, participantId, status, type = "mic") {
+  console.log("\neditMicOrVideoStatus. participantId : " + participantId);
+  console.log("type : ", type, "status : ", status);
 
-app.get("/startLive", (req, res) => {
-  res.sendFile(__dirname + "/start_live.html");
-});
+  let participantsList = conferenceListObj[conferenceId].participantsList; // do not delete!
+  conferenceListObj[conferenceId].participantsList = await participantsList.map((each) => {
+    if (each.id === participantId) {
+      console.log("edit participant. check obj : ", {
+        ...each,
+        isMicOn: type === "mic" ? status : each.micStatus,
+        isVideoOn: type === "video" ? status : each.isVideoOn,
+      });
+      return {
+        ...each,
+        isMicOn: type === "mic" ? status : each.isMicOn,
+        isVideoOn: type === "video" ? status : each.isVideoOn,
+      };
+    } else return each;
+  });
 
-app.get("/rooms", (req, res) => {
-  res.sendFile(__dirname + "/enter_room.html");
-});
-
-app.get("/live/participant/:id", (req, res) => {
-  res.sendFile(__dirname + "/live_watcher.html");
-});
-
-app.get("/live/host/:id", (req, res) => {
-  res.sendFile(__dirname + "/live_host.html");
-});
-
-app.get("/watch_vod/:id", (req, res) => {
-  res.sendFile(__dirname + "/watch_vod.html");
-});
-
-// For image rendering. Do not delete!
-//app.use("/live/image_files", express.static(__dirname + "/image_files"));
-app.use("/get/image_files", express.static(__dirname + "/image_files"));
+  console.log("check list after edit : " + JSON.stringify(conferenceListObj[conferenceId].participantsList));
+}
 
 // 회의실 목록 객체
 let conferenceListObj = {};
 
-// 각 회의실 참석자 수
-// conferenceId : (숫자) 형식으로 저장
-let numberOfParticipantsForEachRoom = {};
+// 새 참석자 입장 시 연결 상태 확인용 배열
+let connectionStatus = [];
+
+// 새 참석자 데이터 임시 저장 변수
+let newParticipantObj = {};
+
+// 각 회의실 참석자 수. conferenceId : (숫자) 형식으로 저장
 
 // io 생성
 const io = new Server(httpServer, {
@@ -115,22 +110,33 @@ io.on("connection", (socket) => {
 
   let conferenceId = socket.handshake.query.conferenceId; // 회의실 식별을 위한 고유 id
   const userName = socket.handshake.query.userName;
-
+  let isHost = socket.handshake.query.isHost === "true";
   let peerConnectionID; // client 에서 RTCPeerConnection 객체를 구분해 줄 고유 ID
 
   // 호스트가 회의실 생성하기
-  socket.on("create new conference", () => {
-    console.log("\n#[server.js] create new conference", "\n", getTime());
+  socket.on("create new conference", (data) => {
+    console.log("\n#[server.js] create new conference. data : ", data, "\n", getTime());
     conferenceId = generateConferenceId();
     socket.join(conferenceId); // 회의실 생성 및 입장은 conferenceId 를 통해서 하기. 이름이 중복되는 경우가 있음.
+    console.log("userName : ", userName);
 
     let conferencePassword = generateConferencePassword();
     conferenceListObj[conferenceId] = {
-      hostSocketId: socket.id,
+      hostSocketId: socket.id, // 회의 호스트. 호스트가 퇴장 시 변경됨.
       conferencePassword,
+      hostName: userName,
+      participantsList: [
+        {
+          id: socket.id,
+          name: userName,
+          profileImg: data.profileImg,
+          isMicOn: data.isMicOn,
+          isVideoOn: data.isVideoOn,
+          isHost: true,
+        },
+      ],
     };
 
-    numberOfParticipantsForEachRoom[conferenceId] = 0; // 참석자 수 설정.
     console.log("conference ID : ", conferenceId);
     // 회의실 생성 완료
 
@@ -140,101 +146,212 @@ io.on("connection", (socket) => {
       conferencePassword,
     });
 
-    console.log("\n#[server.js] check conferenceListObj : ", conferenceListObj, "\n", getTime());
+    console.log("check conferenceListObj : ", JSON.stringify(conferenceListObj), "\n", getTime());
+    console.log("participant list length : ", conferenceListObj[conferenceId].participantsList.length);
   });
 
   // 회의 참석 요청하기
-  socket.on("request join", () => {
-    console.log("\n#[server.js] request join", "\n", getTime());
-    const participantName = socket.handshake.query.userName;
+  socket.on("request join", (data) => {
+    console.log("\n#[server.js] request join", data, "\n", getTime());
     socket.join(conferenceId); // 방송방 생성 및 입장은 conferenceId 를 통해서 하기. 이름이 중복되는 경우가 있음.
 
-    peerConnectionID = v4(); // 신규 참석자가 peerConnectionID 를 생성(기존 참석자는 해당 없음)
+    //peerConnectionID = v4(); // 신규 참석자가 peerConnectionID 를 생성(기존 참석자는 해당 없음) -> 기존 참석자가 만들어 주는 식으로 변경 해야 됨
     console.log("\n# check peerConnectionID : ", peerConnectionID);
 
-    numberOfParticipantsForEachRoom[conferenceId] += 1; // 참석자 수 갱신.
-    console.log("\n#[server.js] numberOfParticipants : ", numberOfParticipantsForEachRoom[conferenceId]);
+    let hostSocketId = conferenceListObj[conferenceId].hostSocketId;
 
-    io.to(conferenceId).emit("participant joined", {
-      participantName,
+    newParticipantObj = {
+      id: data.participantSocketId,
+      name: userName,
+      profileImg: data.profileImg,
+      isMicOn: data.isMicOn,
+      isVideoOn: data.isVideoOn,
+    };
+
+    socket.broadcast.to(conferenceId).emit("request join", {
       participantSocketId: socket.id,
-      hostSocketId: conferenceListObj[conferenceId].hostSocketId,
-      peerConnectionID, // 호스트에게 전달
-      numberOfParticipants: numberOfParticipantsForEachRoom[conferenceId],
+      hostSocketId,
+      //conferencePassword: conferenceListObj[conferenceId].conferencePassword,
+    });
+
+    let allMembersSocketId = conferenceListObj[conferenceId].participantsList.map((each) => each.id);
+    console.log("allMembersSocketId : ", allMembersSocketId, "\n");
+
+    // 새 참석자의 경우 기존 참가자들 socket id 보내주기
+    socket.to(socket.id).emit("new participant create peerconnection", {
+      allMembersSocketId,
     });
   });
 
-  // 참석자 또는 호스트가 채팅 입력 시 채팅 내용 전송해 주기
+  // offer 보내기
+  socket.on("offer", (data) => {
+    console.log("\n#[server.js] offer : ", data, "\n", getTime());
+    peerConnectionID = data.peerConnectionID; // offer 를 보내는 쪽에서 서버에 peerConnectionID 저장
+    console.log("\n# check peerConnectionID : ", peerConnectionID);
+
+    socket.to(data.to).emit("offer", {
+      ...data,
+      peerConnectionID,
+    });
+  });
+
+  // answer 보내기
+  socket.on("answer", (data) => {
+    console.log("\n#[server.js] answer : ", data, "\n", getTime());
+    peerConnectionID = data.peerConnectionID; // offer 를 받고 answer 를 보내는 쪽에서 서버에 peerConnectionID 저장
+    console.log("\n# check peerConnectionID : ", data.peerConnectionID);
+    socket.to(data.to).emit("answer", {
+      ...data,
+      peerConnectionID: data.peerConnectionID,
+    });
+  });
+
+  // offer_screenShare 보내기
+  socket.on("offer_screenShare", (data) => {
+    console.log("\n#[server.js] offer_screenShare : ", data, "\n", getTime());
+    peerConnectionID = data.peerConnectionID; // offer 를 보내는 쪽에서 서버에 peerConnectionID 저장
+    console.log("\n# check peerConnectionID : ", peerConnectionID);
+
+    socket.to(data.to).emit("offer_screenShare", {
+      ...data,
+    });
+  });
+
+  // answer_screenShare 보내기
+  socket.on("answer_screenShare", (data) => {
+    console.log("\n#[server.js] answer_screenShare : ", data, "\n", getTime());
+    peerConnectionID = data.peerConnectionID; // offer 를 받고 answer 를 보내는 쪽에서 서버에 peerConnectionID 저장
+    console.log("\n# check peerConnectionID : ", data.peerConnectionID);
+    socket.to(data.to).emit("answer_screenShare", {
+      ...data,
+    });
+  });
+
+  // iceCandidate 보내기
+  socket.on("iceCandidate", (data) => {
+    console.log("\n#[server.js] iceCandidate : ", data, "\n", getTime());
+    console.log("\n# check peerConnectionID : ", data.peerConnectionID);
+    socket.to(data.to).emit("iceCandidate", {
+      ...data,
+      peerConnectionID: data.peerConnectionID,
+    });
+    // io.to(data.to).emit("iceCandidate", {
+    //   ...data,
+    //   peerConnectionID,
+    // });
+  });
+
+  // 호스트 및 각 참석자가 새 참석자와 연결 성공 시
+  socket.on("connected to peer", async (data) => {
+    console.log("\n#[server.js] connected to peer. data : ", data, "\n", getTime());
+
+    await connectionStatus.push(data);
+    console.log("push data to connectionStatus : ", connectionStatus);
+
+    let participantsList = conferenceListObj[conferenceId].participantsList;
+    let numberOfParticipants = participantsList.length;
+
+    console.log("participantsList : ", JSON.stringify(participantsList));
+    console.log("connectionStatus : ", connectionStatus);
+    console.log("numberOfParticipants : ", numberOfParticipants, "\n");
+
+    if (numberOfParticipants * 2 <= connectionStatus.length) {
+      let isAllConnected = connectionStatus.every((each) => each.isConnected === true);
+      console.log("isAllConnected : ", isAllConnected);
+
+      if (isAllConnected) {
+        await participantsList.push(newParticipantObj);
+        console.log("participantsList : ", participantsList, "\n");
+        io.to(conferenceId).emit("participant joined", {
+          //newParticipant: newParticipantObj, // 기존 참석자들이 사용할 데이터
+          newParticipantSocketId: newParticipantObj.id,
+
+          // 새 참석자가 사용할 데이터
+          participantsList,
+          conferencePassword: conferenceListObj[conferenceId].conferencePassword,
+          hostName: conferenceListObj[conferenceId].hostName,
+        });
+      }
+
+      connectionStatus = await [];
+      newParticipantObj = await null;
+      console.log("init connectionStatus : ", connectionStatus);
+      console.log("init newParticipantObj : ", newParticipantObj);
+      console.log("numberOfParticipants : ", participantsList.length, "\n");
+    }
+  });
+
+  // 채팅 입력 시 채팅 내용 전송해 주기
   socket.on("new chat message", (data) => {
     console.log("\n#[server.js] new chat message : ", data, "\n", getTime());
 
     io.to(conferenceId).emit("new chat message", {
-      senderUserId: data.senderUserId,
-      senderProfileImg: data.senderProfileImg,
+      senderSocketId: socket.id,
       senderName: userName,
+      senderProfileImg: data.senderProfileImg,
       chatMessageContents: data.chatMessageContents,
     });
   });
 
-  // 호스트가 offer 보낸 후 참석자에게 offer 보내기
-  socket.on("offer", (data) => {
-    console.log("\n#[server.js] offer : ", data, "\n", getTime());
-    peerConnectionID = data.peerConnectionID; // offer 를 보내는 주체인 host 는 peerConnectionID 를 서버에서 생성하지 않고 local 에서 생성함.
-    console.log("\n# check peerConnectionID : ", peerConnectionID);
-    io.to(data.to).emit("offer", {
-      ...data,
-      peerConnectionID,
+  // 참석자가 비디오 on/off 할 때
+  socket.on("switch video status", (data) => {
+    console.log("\n#[server.js] switch video status : ", data, "\n", getTime());
+    let senderSocketId = data.senderSocketId;
+    editMicOrVideoStatus(conferenceId, senderSocketId, data.videoStatus, "video");
+    io.to(conferenceId).emit("switch video status", {
+      senderSocketId,
+      videoStatus: data.videoStatus,
     });
   });
 
-  // 참석자가 호스트에게 offer 받고 answer 보냈을 때 처리
-  socket.on("answer", (data) => {
-    console.log("\n#[server.js] answer : ", data, "\n", getTime());
-    console.log("\n# check peerConnectionID : ", peerConnectionID);
-    io.to(data.to).emit("answer", {
-      ...data,
-      peerConnectionID,
+  // 참석자가 마이크 on/off 할 때
+  socket.on("switch mic status", (data) => {
+    console.log("\n#[server.js] switch mic status : ", data, "\n", getTime());
+    let senderSocketId = data.senderSocketId;
+    editMicOrVideoStatus(conferenceId, senderSocketId, data.micStatus, "mic");
+    io.to(conferenceId).emit("switch mic status", {
+      senderSocketId,
+      micStatus: data.micStatus,
     });
   });
 
-  socket.on("iceCandidate", (data) => {
-    console.log("\n#[server.js] iceCandidate : ", data, "\n", getTime());
-    io.to(data.to).emit("iceCandidate", {
-      ...data,
-      peerConnectionID,
-    });
-  });
-
-  // 특정 참석자가 채팅방에서 나갈때
-  // disconnecting 이벤트가 먼저 발생하고 disconnect 이벤트가 발생함
-  socket.on("disconnect", () => {
-    const userName = socket.handshake.query.userName;
-    console.log("\n#[server.js] socket disconnect : ", userName, "\n", getTime());
-    console.log("#[server.js] socket id : ", socket.id, "\n", getTime());
-
-    numberOfParticipantsForEachRoom[conferenceId] -= 1; // 참석자 수 갱신.
-    console.log("\n#[server.js] numberOfParticipants : ", numberOfParticipantsForEachRoom[conferenceId]);
-    io.to(conferenceId).emit("participant left", {
-      participantName: userName,
-      participantSocketId: socket.id,
-      peerConnectionID,
-      numberOfParticipants: numberOfParticipantsForEachRoom[conferenceId],
-    });
-  });
-
-  // 참석자가 방송방에서 퇴장했을 때
-  socket.on("participant left", () => {
+  // 참석자가 회의에서 퇴장했을 때
+  socket.on("participant left", async () => {
     console.log("\n#[server.js] participant left", "\n", getTime());
     console.log("#[server.js] participant name : ", userName);
     console.log("#[server.js] participant socket id : ", socket.id);
 
-    numberOfParticipantsForEachRoom[conferenceId] -= 1; // 참석자 수 갱신.
-    console.log("\n#[server.js] numberOfParticipants : ", numberOfParticipantsForEachRoom[conferenceId]);
-    io.to(conferenceId).emit("participant left", {
-      participantName: userName,
+    //let participantsList = conferenceListObj[conferenceId].participantsList;
+    //conferenceListObj[conferenceId].participantsList = await participantsList.filter((each) => each.id !== socket.id);
+    removeParticipantFromList(conferenceId, socket.id);
+    console.log(
+      "\n#[server.js] check participantsList : ",
+      JSON.stringify(conferenceListObj[conferenceId].participantsList),
+      "\n",
+      getTime()
+    );
+
+    // just for check
+    //let numberOfParticipants = Object.keys(conferenceListObj[conferenceId].participantsList).length;
+    let numberOfParticipants = conferenceListObj[conferenceId].participantsList.length;
+    console.log("\n#[server.js] numberOfParticipants : ", numberOfParticipants);
+    socket.broadcast.to(conferenceId).emit("participant left", {
       participantSocketId: socket.id,
       peerConnectionID,
-      numberOfParticipants: numberOfParticipantsForEachRoom[conferenceId],
+    });
+    // io.to(conferenceId).emit("participant left", {
+    //   participantSocketId: socket.id,
+    //   peerConnectionID,
+    // });
+  });
+
+  // 화면 공유 중인 참석자가 화면 공유 중지 시
+  socket.on("stopScreenSharing", (data) => {
+    console.log("\n#[server.js] stopScreenSharing", "\n", getTime());
+    console.log("#[server.js] participant socket id : ", data.participantSocketId);
+
+    socket.broadcast.to(conferenceId).emit("stopScreenSharing", {
+      participantSocketId: data.participantSocketId,
     });
   });
 
@@ -246,23 +363,91 @@ io.on("connection", (socket) => {
     console.log("#[server.js] conferenceId : ", conferenceId, "\n", getTime());
 
     delete conferenceListObj[conferenceId];
-    delete numberOfParticipantsForEachRoom[conferenceId];
-    io.to(conferenceId).emit("end conference");
+
+    console.log("\n# conferenceListObj : ", JSON.stringify(conferenceListObj));
+    socket.broadcast.to(conferenceId).emit("end conference");
   });
 
   // 호스트가 혼자만 회의에서 나갔을 때
-  socket.on("host left", (data) => {
-    console.log("\n#[server.js] host left", "\n", getTime());
-    console.log("#[server.js] host name : ", userName, "\n", getTime());
-    console.log("#[server.js] host socket id : ", socket.id, "\n", getTime());
-    console.log("#[server.js] data : ", data, "\n", getTime());
+  socket.on("host left", async (data) => {
+    console.log("\n#[server.js] host left. data : ", data, "\n", getTime());
 
-    numberOfParticipantsForEachRoom[conferenceId] -= 1; // 참석자 수 갱신.
-    console.log("\n#[server.js] numberOfParticipants : ", numberOfParticipantsForEachRoom[conferenceId]);
+    // 회의실의 새 호스트 지정
+    let participantsList = conferenceListObj[conferenceId].participantsList; // do not delete!
+    let newHostObj = participantsList.find((each) => each.id === data.newHostSocketId);
+    let newHostName = newHostObj.name;
+    console.log("newHostName : ", newHostName, "\n");
+    newHostObj.isHost = true;
 
-    io.to(conferenceId).emit("host left", {
-      newHost: "", // 새로운 호스트 지정해 주기
+    conferenceListObj[conferenceId] = {
+      hostSocketId: data.newHostSocketId,
+      hostName: newHostName,
+      ...conferenceListObj[conferenceId],
+    };
+
+    removeParticipantFromList(conferenceId, socket.id);
+    console.log("check participantsList : ", participantsList);
+
+    socket.broadcast.to(conferenceId).emit("host left", {
+      hostSocketId: data.hostSocketId,
+      newHostSocketId: data.newHostSocketId,
+      newHostName,
+      peerConnectionID,
     });
+  });
+
+  // 참석자로부터 연결이 끊겼을 때
+  // disconnecting 이벤트가 먼저 발생하고 disconnect 이벤트가 발생함
+  socket.on("disconnect", async () => {
+    console.log("\n#[server.js] socket disconnect : ", userName, "\n", getTime());
+
+    if (conferenceListObj[conferenceId]) {
+      //let isHost = socket.id === conferenceListObj[conferenceId].hostSocketId;
+
+      if (isHost) {
+        console.log("#[server.js] is host.", getTime());
+        // 추후 로직 추가
+      } else {
+        console.log("#[server.js] is participant.", getTime());
+        let userLeft = conferenceListObj[conferenceId].participantsList[socket.id];
+
+        if (userLeft) {
+          console.log("#[server.js] participant has been disconnected abnormally", getTime());
+          // let participantsList = conferenceListObj[conferenceId].participantsList;
+          // conferenceListObj[conferenceId].participantsList = await participantsList.filter(
+          //   (each) => each.id !== socket.id
+          // );
+          removeParticipantFromList(conferenceId, socket.id);
+          console.log(
+            "\n#[server.js] check participantsList : ",
+            JSON.stringify(conferenceListObj[conferenceId].participantsList),
+            "\n",
+            getTime()
+          );
+
+          // just for check
+          let numberOfParticipants = conferenceListObj[conferenceId].participantsList.length;
+          console.log("\n#[server.js] numberOfParticipants : ", numberOfParticipants);
+
+          // io.to(conferenceId).emit("participant left", {
+          //   participantSocketId: socket.id,
+          //   peerConnectionID,
+          // });
+          socket.broadcast.to(conferenceId).emit("participant left", {
+            participantSocketId: socket.id,
+            peerConnectionID,
+          });
+        } else {
+          console.log("#[server.js] participant has left normally.", getTime());
+        }
+      }
+
+      // 비정상 종료로 방폭 시 회의실 데이터 삭제해 주기
+      let numberOfParticipants = conferenceListObj[conferenceId].participantsList.length;
+      if (numberOfParticipants.length === 0) {
+        delete conferenceListObj[conferenceId];
+      }
+    }
   });
 });
 
