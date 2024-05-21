@@ -1,3 +1,6 @@
 /node_modules
 
-config.js
+.env
+sslCert.pem
+sslKey.pem
+legacy.js
