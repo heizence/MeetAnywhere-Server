@@ -24,7 +24,6 @@ function generatePassword() {
 }
 
 module.exports = {
-  getTime,
   generateId,
   generatePassword,
 };
