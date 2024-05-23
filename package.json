@@ -1,7 +1,7 @@
 {
-  "name": "webrtc_signaling_server",
+  "name": "meetanywhere_server",
   "version": "1.0.0",
-  "description": "",
+  "description": "This server file includes http request handling main server and socket.io server which handles webrtc signaling process and real-time request during conferences.",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
