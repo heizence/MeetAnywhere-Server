@@ -13,7 +13,7 @@
 
 프로젝트에 대한 상세 설명은 다음 링크를 참고할 것.
 
-[heizence.devlog - Zoom Android 앱 클론코딩](https://heizence.github.io/posts/androidProject/)
+[heizence.devlog - Zoom Android 앱 클론코딩](https://heizence.github.io/posts/zoomCloneCoding/)
 
 ## Getting started
 
