@@ -2,10 +2,12 @@ const express = require("express");
 const router = express.Router();
 const mysql = require("mysql");
 const jwt = require("jsonwebtoken");
+const nodemailer = require("nodemailer");
+const crypto = require("crypto");
 
 require("dotenv").config();
 
-const { dbHost, dbPort, dbUser, dbPassword, dbName, jwtSecretKey } = process.env;
+const { dbHost, dbPort, dbUser, dbPassword, dbName, jwtSecretKey, nodemailerUser, nodemailerPassword } = process.env;
 
 const connectionInfo = {
   host: dbHost,
@@ -17,6 +19,16 @@ const connectionInfo = {
 
 const connection = mysql.createConnection(connectionInfo); // DB 커넥션 생성
 connection.connect(); // DB 접속
+
+// nodemailer transporter 생성
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: nodemailerUser,
+    pass: nodemailerPassword,
+  },
+  tls: { rejectUnauthorized: false },
+});
 
 // jwt 생성
 function generateJWT(user) {
@@ -34,17 +46,13 @@ function generateJWT(user) {
 // jwt 검증
 function verifyJWT(req, res) {
   console.log("\n[mainServerRouters.js]verifyJWT");
-  // Get the token from the request headers
+
   const token = req.headers.authorization;
   console.log("[mainServerRouters.js]check token : ", token);
-  // Check if token is provided
+
   if (!token) {
     console.log("[mainServerRouters.js]no token");
-    res.send({
-      statusCode: 401,
-      data: "",
-    });
-
+    res.status(401).send();
     return false;
   }
 
@@ -53,22 +61,13 @@ function verifyJWT(req, res) {
     if (err) {
       // Token verification failed
       console.log("[mainServerRouters.js]invalid token");
-      res.send({
-        statusCode: 401,
-        data: "",
-      });
+      res.status(401).send();
       return false;
     } else {
       console.log("[mainServerRouters.js]token verified.");
-      return true;
     }
   });
 }
-
-// Define a simple route
-router.get("/", (req, res) => {
-  res.send("Hello world!");
-});
 
 // 로그인
 router.post("/app/users/signin", async (req, res) => {
@@ -81,42 +80,34 @@ router.post("/app/users/signin", async (req, res) => {
     connection.query(query, function (err, results) {
       if (err) {
         console.log(err);
-        res.send({
-          statusCode: 500,
-          data: "",
-        });
+        res.status(500).send();
       } else {
         console.log("[mainServerRouters.js]results : ", results);
         if (results.length) {
           console.log("[mainServerRouters.js]found user account");
-          res.send({
-            statusCode: 200,
-            data: {
-              token: generateJWT({
-                email,
-                password,
-              }),
-              U_Id: results[0].U_Id,
-              U_Email: results[0].U_Email,
-              U_Name: results[0].U_Name,
-              U_ProfileImg: results[0].U_ProfileImg,
-            },
+
+          let data = {
+            token: generateJWT({
+              email,
+              password,
+            }),
+            U_Id: results[0].U_Id,
+            U_Email: results[0].U_Email,
+            U_Name: results[0].U_Name,
+            U_ProfileImg: results[0].U_ProfileImg,
+          };
+          res.status(200).send({
+            data: JSON.stringify(data),
           });
         } else {
           console.log("[mainServerRouters.js]user not found");
-          res.send({
-            statusCode: 404,
-            data: "",
-          });
+          res.status(404).send();
         }
       }
     });
   } catch (err) {
     console.error("Error executing query:", err);
-    res.send({
-      statusCode: 500,
-      data: "",
-    });
+    res.status(500).send();
   }
 });
 
@@ -128,36 +119,65 @@ router.post("/app/users/reissuePassword", async (req, res) => {
     const { email } = params;
 
     const query = `SELECT U_Id, U_Email, U_Password, U_Name, U_ProfileImg FROM USERS WHERE U_Email="${email}"`;
-    connection.query(query, function (err, results) {
+    connection.query(query, async function (err, results) {
       if (err) {
         console.log(err);
-        res.send({
-          statusCode: 500,
-          data: "",
-        });
+        res.status(500).send();
       } else {
         console.log("[mainServerRouters.js]results : ", results);
         if (results.length) {
           console.log("[mainServerRouters.js]found user account");
-          res.send({
-            statusCode: 200,
-            data: "",
+
+          const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+          let newPassword = "";
+          const charactersLength = characters.length;
+          for (let i = 0; i < 8; i++) {
+            newPassword += characters.charAt(Math.floor(Math.random() * charactersLength));
+          }
+
+          const hash = crypto.createHash("sha256");
+          hash.update(newPassword, "utf8");
+          const encodedHash = hash.digest();
+
+          let hashedPassword = "";
+          for (let i = 0; i < encodedHash.length; i++) {
+            const hex = encodedHash[i].toString(16);
+            if (hex.length === 1) {
+              hashedPassword += "0";
+            }
+            hashedPassword += hex;
+          }
+
+          console.log("[mainServerRouters.js]hashedPassword : ", hashedPassword);
+
+          const updateQuery = `UPDATE MeetAnywhere.USERS SET U_Password='${hashedPassword}' WHERE U_Email='${email}';`;
+          connection.query(updateQuery, async function (err, results) {
+            if (err) {
+              console.log(err);
+              res.status(500).send();
+            } else {
+              console.log("[mainServerRouters.js]password updated");
+              await transporter.sendMail({
+                from: "MeetAnywhere<norelpy@meetanywhere.com>",
+                to: email,
+                subject: "MeetAnywhere 비밀번호 재발급",
+                text: `임시 비밀번호가 발급되었습니다. \n ${newPassword}`,
+              });
+
+              res.status(200).send({
+                data: "",
+              });
+            }
           });
         } else {
           console.log("[mainServerRouters.js]user not found");
-          res.send({
-            statusCode: 404,
-            data: "",
-          });
+          res.status(404).send();
         }
       }
     });
   } catch (err) {
     console.error("Error executing query:", err);
-    res.send({
-      statusCode: 500,
-      data: "",
-    });
+    res.status(500).send();
   }
 });
 
@@ -165,40 +185,27 @@ router.post("/app/users/reissuePassword", async (req, res) => {
 router.post("/app/users/sendVerificationCode", async (req, res) => {
   try {
     const params = req.body;
-    console.log("\n[mainServerRouters.js]sendVerificationCode. params : ", params);
+    console.log("\n[mainServerRouters.js]sendVerificationCode. params : ", req.body);
     const { email } = params;
 
-    const query = `SELECT U_Id, U_Email, U_Password, U_Name, U_ProfileImg FROM USERS WHERE U_Email="${email}"`;
-    connection.query(query, function (err, results) {
-      if (err) {
-        console.log(err);
-        res.send({
-          statusCode: 500,
-          data: "",
-        });
-      } else {
-        console.log("[mainServerRouters.js]results : ", results);
-        if (results.length) {
-          console.log("[mainServerRouters.js]found user account");
-          res.send({
-            statusCode: 200,
-            data: "verification code", // mailgun 연동
-          });
-        } else {
-          console.log("[mainServerRouters.js]user not found");
-          res.send({
-            statusCode: 404,
-            data: "",
-          });
-        }
-      }
+    let code = "";
+    for (let i = 0; i < 6; i++) {
+      code += Math.floor(Math.random() * 10);
+    }
+
+    await transporter.sendMail({
+      from: "MeetAnywhere<norelpy@meetanywhere.com>",
+      to: email,
+      subject: "MeetAnywhere 인증번호 전송",
+      text: `다음 인증번호를 입력해주세요. \n ${code}`,
+    });
+
+    res.status(200).send({
+      data: code,
     });
   } catch (err) {
     console.error("Error executing query:", err);
-    res.send({
-      statusCode: 500,
-      data: "",
-    });
+    res.status(500).send();
   }
 });
 
@@ -208,23 +215,16 @@ router.post("/app/users/signup", async (req, res) => {
     const params = req.body;
     console.log("\n[mainServerRouters.js]signup. params : ", params);
     const { email, password, name } = params;
-
     const query = `SELECT U_Id, U_Email, U_Password, U_Name, U_ProfileImg FROM USERS WHERE U_Email="${email}" and U_Password="${password}"`;
     connection.query(query, function (err, results) {
       if (err) {
         console.log(err);
-        res.send({
-          statusCode: 500,
-          data: "",
-        });
+        res.status(500).send();
       } else {
         console.log("[mainServerRouters.js]results : ", results);
         if (results.length) {
           console.log("[mainServerRouters.js]user already signed up.");
-          res.send({
-            statusCode: 400,
-            data: "",
-          });
+          res.status(400).send();
         } else {
           console.log("[mainServerRouters.js]user not found");
 
@@ -232,15 +232,11 @@ router.post("/app/users/signup", async (req, res) => {
           connection.query(insertQuery, function (err2, results2) {
             if (err2) {
               console.log(err2);
-              res.send({
-                statusCode: 500,
-                data: "",
-              });
+              res.status(500).send();
             } else {
               if (results2) {
                 console.log("[mainServerRouters.js]signup done.");
-                res.send({
-                  statusCode: 200,
+                res.status(200).send({
                   data: "",
                 });
               }
@@ -251,18 +247,14 @@ router.post("/app/users/signup", async (req, res) => {
     });
   } catch (err) {
     console.error("Error executing query:", err);
-    res.send({
-      statusCode: 500,
-      data: "",
-    });
+    res.status(500).send();
   }
 });
 
 // 프로필 이미지 변경하기
 router.post("/app/users/editProfileImg", async (req, res) => {
   try {
-    if (!verifyJWT(req, res)) return;
-
+    verifyJWT(req, res);
     const params = req.body;
     console.log("\n[mainServerRouters.js]editProfileImg. params : ", params);
     const { userId, imageFileString } = params;
@@ -271,41 +263,24 @@ router.post("/app/users/editProfileImg", async (req, res) => {
     connection.query(query, function (err, results) {
       if (err) {
         console.log(err);
-        res.send({
-          statusCode: 500,
-          data: "",
-        });
+        res.status(500).send();
       } else {
-        console.log("[mainServerRouters.js]results : ", results);
-        if (results.length) {
-          console.log("[mainServerRouters.js]edit profileImg done.");
-          res.send({
-            statusCode: 200,
-            data: results[0].U_ProfileImg,
-          });
-        } else {
-          console.log("[mainServerRouters.js]update failed");
-          res.send({
-            statusCode: 500,
-            data: "",
-          });
-        }
+        console.log("[mainServerRouters.js]edit profileImg done.");
+        res.status(200).send({
+          data: imageFileString,
+        });
       }
     });
   } catch (err) {
     console.error("Error executing query:", err);
-    res.send({
-      statusCode: 500,
-      data: "",
-    });
+    res.status(500).send();
   }
 });
 
 // 계정 삭제하기
 router.post("/app/users/deleteAccount", async (req, res) => {
   try {
-    if (!verifyJWT(req, res)) return;
-
+    verifyJWT(req, res);
     const params = req.body;
     console.log("\n[mainServerRouters.js]deleteAccount. params : ", params);
     const { userId } = params;
@@ -314,41 +289,24 @@ router.post("/app/users/deleteAccount", async (req, res) => {
     connection.query(query, function (err, results) {
       if (err) {
         console.log(err);
-        res.send({
-          statusCode: 500,
+        res.status(500).send();
+      } else {
+        console.log("[mainServerRouters.js]user account deleted");
+        res.status(200).send({
           data: "",
         });
-      } else {
-        console.log("[mainServerRouters.js]results : ", results);
-        if (results.length) {
-          console.log("[mainServerRouters.js]user account deleted");
-          res.send({
-            statusCode: 200,
-            data: "",
-          });
-        } else {
-          console.log("[mainServerRouters.js]user not found");
-          res.send({
-            statusCode: 404,
-            data: "",
-          });
-        }
       }
     });
   } catch (err) {
     console.error("Error executing query:", err);
-    res.send({
-      statusCode: 500,
-      data: "",
-    });
+    res.status(500).send();
   }
 });
 
 // 이름 변경
 router.post("/app/users/updateName", async (req, res) => {
   try {
-    if (!verifyJWT(req, res)) return;
-
+    verifyJWT(req, res);
     const params = req.body;
     console.log("\n[mainServerRouters.js]updateName. params : ", params);
     const { userId, name } = params;
@@ -357,40 +315,24 @@ router.post("/app/users/updateName", async (req, res) => {
     connection.query(query, function (err, results) {
       if (err) {
         console.log(err);
-        res.send({
-          statusCode: 500,
+        res.status(500).send();
+      } else {
+        console.log("[mainServerRouters.js]username updated");
+        res.status(200).send({
           data: "",
         });
-      } else {
-        console.log("[mainServerRouters.js]results : ", results);
-        if (results.length) {
-          console.log("[mainServerRouters.js]username updated");
-          res.send({
-            statusCode: 200,
-            data: "",
-          });
-        } else {
-          console.log("[mainServerRouters.js]update failed");
-          res.send({
-            statusCode: 404,
-            data: "",
-          });
-        }
       }
     });
   } catch (err) {
     console.error("Error executing query:", err);
-    res.send({
-      statusCode: 500,
-      data: "",
-    });
+    res.status(500).send();
   }
 });
 
 // 비밀번호 변경
 router.post("/app/users/updatePassword", async (req, res) => {
   try {
-    if (!verifyJWT(req, res)) return;
+    verifyJWT(req, res);
     const params = req.body;
     console.log("\n[mainServerRouters.js]updatePassword. params : ", params);
     const { userId, prevPassword, newPassword } = params;
@@ -399,10 +341,7 @@ router.post("/app/users/updatePassword", async (req, res) => {
     connection.query(query, function (err, results) {
       if (err) {
         console.log(err);
-        res.send({
-          statusCode: 500,
-          data: "",
-        });
+        res.status(500).send();
       } else {
         console.log("[mainServerRouters.js]results : ", results);
         if (results.length) {
@@ -412,49 +351,30 @@ router.post("/app/users/updatePassword", async (req, res) => {
           connection.query(updateQuery, function (err, results) {
             if (err) {
               console.log(err);
-              res.send({
-                statusCode: 500,
+              res.status(500).send();
+            } else {
+              console.log("[mainServerRouters.js]password updated");
+              res.status(200).send({
                 data: "",
               });
-            } else {
-              console.log("[mainServerRouters.js]results : ", results);
-              if (results.length) {
-                console.log("[mainServerRouters.js]password updated");
-                res.send({
-                  statusCode: 200,
-                  data: "",
-                });
-              } else {
-                console.log("[mainServerRouters.js]update failed");
-                res.send({
-                  statusCode: 404,
-                  data: "",
-                });
-              }
             }
           });
         } else {
           console.log("[mainServerRouters.js]user not found");
-          res.send({
-            statusCode: 404,
-            data: "",
-          });
+          res.status(404).send();
         }
       }
     });
   } catch (err) {
     console.error("Error executing query:", err);
-    res.send({
-      statusCode: 500,
-      data: "",
-    });
+    res.status(500).send();
   }
 });
 
 // 새 회의 생성하기
-router.post("/app/users/createConferenceData", async (req, res) => {
+router.post("/app/conference/createConferenceData", async (req, res) => {
   try {
-    if (!verifyJWT(req, res)) return;
+    verifyJWT(req, res);
     const params = req.body;
     console.log("\n[mainServerRouters.js]createConferenceData. params : ", params);
     const { conferenceId, password } = params;
@@ -463,32 +383,25 @@ router.post("/app/users/createConferenceData", async (req, res) => {
     connection.query(query, function (err, results) {
       if (err) {
         console.log(err);
-        res.send({
-          statusCode: 500,
-          data: "",
-        });
+        res.status(500).send();
       } else {
         console.log("[mainServerRouters.js]results : ", results);
         console.log("[mainServerRouters.js]conference created.");
-        res.send({
-          statusCode: 200,
+        res.status(200).send({
           data: "",
         });
       }
     });
   } catch (err) {
     console.error("Error executing query:", err);
-    res.send({
-      statusCode: 500,
-      data: "",
-    });
+    res.status(500).send();
   }
 });
 
 // 회의 종료 후 데이터 삭제
-router.post("/app/users/deleteConferenceData", async (req, res) => {
+router.post("/app/conference/deleteConferenceData", async (req, res) => {
   try {
-    if (!verifyJWT(req, res)) return;
+    verifyJWT(req, res);
     const params = req.body;
     console.log("\n[mainServerRouters.js]deleteConferenceData. params : ", params);
     const { conferenceId } = params;
@@ -497,32 +410,25 @@ router.post("/app/users/deleteConferenceData", async (req, res) => {
     connection.query(query, function (err, results) {
       if (err) {
         console.log(err);
-        res.send({
-          statusCode: 500,
-          data: "",
-        });
+        res.status(500).send();
       } else {
         console.log("[mainServerRouters.js]results : ", results);
         console.log("[mainServerRouters.js]conference deleted.");
-        res.send({
-          statusCode: 200,
+        res.status(200).send({
           data: "",
         });
       }
     });
   } catch (err) {
     console.error("Error executing query:", err);
-    res.send({
-      statusCode: 500,
-      data: "",
-    });
+    res.status(500).send();
   }
 });
 
 // 회의 ID 확인하기
-router.post("/app/users/checkConferenceId", async (req, res) => {
+router.post("/app/conference/checkConferenceId", async (req, res) => {
   try {
-    if (!verifyJWT(req, res)) return;
+    verifyJWT(req, res);
     const params = req.body;
     console.log("\n[mainServerRouters.js]checkConferenceId. params : ", params);
     const { conferenceId } = params;
@@ -531,40 +437,30 @@ router.post("/app/users/checkConferenceId", async (req, res) => {
     connection.query(query, function (err, results) {
       if (err) {
         console.log(err);
-        res.send({
-          statusCode: 500,
-          data: "",
-        });
+        res.status(500).send();
       } else {
         console.log("[mainServerRouters.js]results : ", results);
         if (results.length) {
           console.log("[mainServerRouters.js]conference id is valid");
-          res.send({
-            statusCode: 200,
+          res.status(200).send({
             data: "",
           });
         } else {
           console.log("[mainServerRouters.js]invalid conference id ");
-          res.send({
-            statusCode: 404,
-            data: "",
-          });
+          res.status(404).send();
         }
       }
     });
   } catch (err) {
     console.error("Error executing query:", err);
-    res.send({
-      statusCode: 500,
-      data: "",
-    });
+    res.status(500).send();
   }
 });
 
 // 회의 비밀번호 확인하기
 router.post("/app/users/checkConferencePassword", async (req, res) => {
   try {
-    if (!verifyJWT(req, res)) return;
+    verifyJWT(req, res);
     const params = req.body;
     console.log("\n[mainServerRouters.js]checkConferencePassword. params : ", params);
     const { conferenceId, password } = params;
@@ -573,33 +469,23 @@ router.post("/app/users/checkConferencePassword", async (req, res) => {
     connection.query(query, function (err, results) {
       if (err) {
         console.log(err);
-        res.send({
-          statusCode: 500,
-          data: "",
-        });
+        res.status(500).send();
       } else {
         console.log("[mainServerRouters.js]results : ", results);
         if (results.length) {
           console.log("[mainServerRouters.js]conference password is valid");
-          res.send({
-            statusCode: 200,
+          res.status(200).send({
             data: "",
           });
         } else {
           console.log("[mainServerRouters.js]invalid conference password ");
-          res.send({
-            statusCode: 404,
-            data: "",
-          });
+          res.status(404).send();
         }
       }
     });
   } catch (err) {
     console.error("Error executing query:", err);
-    res.send({
-      statusCode: 500,
-      data: "",
-    });
+    res.status(500).send();
   }
 });
 
